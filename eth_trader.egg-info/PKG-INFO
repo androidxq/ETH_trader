@@ -1,0 +1,6 @@
+Metadata-Version: 2.2
+Name: eth_trader
+Version: 0.1
+Requires-Dist: vnpy
+Requires-Dist: pandas
+Dynamic: requires-dist

@@ -1,0 +1,8 @@
+README.md
+setup.py
+eth_trader.egg-info/PKG-INFO
+eth_trader.egg-info/SOURCES.txt
+eth_trader.egg-info/dependency_links.txt
+eth_trader.egg-info/requires.txt
+eth_trader.egg-info/top_level.txt
+tests/test_data_fetch.py
