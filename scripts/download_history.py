@@ -11,7 +11,7 @@ logging.basicConfig(
 
 def download_historical_data():
     fetcher = BinanceFetcher()
-    storage = CSVStorage()
+    storage = CSVStorage()  # 使用默认相对路径
     
     # 连接API
     fetcher.connect(

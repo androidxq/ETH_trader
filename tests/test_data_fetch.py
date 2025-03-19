@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 
 def test_fetch_and_store():
     fetcher = BinanceFetcher()
-    storage = CSVStorage()
+    storage = CSVStorage()  # 使用默认相对路径
     
     fetcher.connect(
         BINANCE_CONFIG["api_key"], 
@@ -27,7 +27,7 @@ def test_fetch_and_store():
         end_time=end_time
     )
     
-    storage.save_kline_data(
+    storage.save_kline_data_by_month(
         data, 
         SYMBOL_CONFIG["main_symbol"], 
         SYMBOL_CONFIG["intervals"][0]

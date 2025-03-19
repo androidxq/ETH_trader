@@ -27,8 +27,12 @@ class SimpleMomentumFactor(BaseFactor):
 
 def load_test_data():
     """加载测试数据"""
-    # 这里使用我们之前下载的数据
-    data_path = Path("d:/pythonProject/ETH_trader/data/kline/ETHUSDT_1h_202401.csv")
+    # 获取项目根目录
+    project_root = Path(__file__).parent.parent
+    
+    # 使用相对路径
+    data_path = project_root / "data/kline/ETHUSDT_1h_202401.csv"
+    
     if not data_path.exists():
         raise FileNotFoundError(f"找不到数据文件: {data_path}")
     

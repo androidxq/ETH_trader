@@ -4,7 +4,16 @@ from datetime import datetime
 import logging
 
 class CSVStorage:
-    def __init__(self, base_path: str = "d:/pythonProject/ETH_trader/data"):
+    def __init__(self, base_path: str = None):
+        # 如果没有提供路径，使用相对于项目根目录的路径
+        if base_path is None:
+            # 获取当前文件位置
+            current_file = Path(__file__)
+            # 项目根目录
+            project_root = current_file.parent.parent
+            # 默认数据存储路径
+            base_path = project_root / "data"
+            
         self.base_path = Path(base_path)
         self._init_storage()
         
