@@ -128,7 +128,7 @@ class FactorGridSearch:
                             population_size=population_size,
                             generations=generations,
                             tournament_size=tournament_size,
-                            stopping_criteria=0.001,
+                            stopping_criteria=0.001,  # 使用小于1的值，避免过早停止
                             early_stopping=30,
                             const_range=(-2.0, 2.0)
                         )

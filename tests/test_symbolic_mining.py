@@ -67,6 +67,7 @@ def test_symbolic_mining():
         
         # stopping_criteria: 停止条件，当适应度改善低于此值时提前停止
         # - 设置较小的值可以在收敛后节省计算资源
+        # - 设置为0.001表示当适应度改善小于0.001时停止
         stopping_criteria=0.001,
         
         # early_stopping: 早停代数，连续多少代没有改善就停止
@@ -75,16 +76,15 @@ def test_symbolic_mining():
         
         # const_range: 常数项取值范围
         # - 控制表达式中常数的数值范围
-        const_range=(-2.0, 2.0),
+        const_range=(-2.0, 2.0)
         
-        # 可以添加更多参数，如:
-        # parsimony_coefficient: 简约系数，惩罚复杂表达式
-        p_crossover=0.7,  # 增加交叉概率
-        p_subtree_mutation=0.2,  # 增加变异概率
-        p_hoist_mutation=0.05,
-        p_point_mutation=0.1,
-        metric='spearman',  # 尝试不同的评估指标
-        verbose=2
+        # 以下参数不被SymbolicFactorMiner类直接支持，已移除
+        # p_crossover=0.7,
+        # p_subtree_mutation=0.2,
+        # p_hoist_mutation=0.05,
+        # p_point_mutation=0.1,
+        # metric='spearman',
+        # verbose=2
     )
     
     print("开始挖掘因子...")
@@ -109,9 +109,10 @@ def test_symbolic_mining():
         # forward_period: 未来收益计算周期
         # - 对于5分钟数据，设置为比1小时K线(24)更长的值，如288代表一天
         # - 该值应根据交易周期和策略持仓时间调整
-        forward_period=72,  # 约6小时预测窗口 (72 * 5分钟)
-        random_state=int(time.time()),
-        fitness_func=custom_fitness
+        forward_period=72  # 约6小时预测窗口 (72 * 5分钟)
+        # 以下参数不被mine_factors方法支持，已移除
+        # random_state=int(time.time()),
+        # fitness_func=custom_fitness
     )
     
     print(f"因子挖掘完成，获得 {len(factors)} 个因子")
