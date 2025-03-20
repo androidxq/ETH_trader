@@ -8,8 +8,24 @@ from sklearn.utils.validation import check_X_y, check_array
 import logging
 import time  # 添加time模块
 import sys
+import os  # 添加os模块获取进程ID
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 添加进程ID的打印函数
+def print_with_pid(*args, **kwargs):
+    """带进程ID的打印函数"""
+    pid = os.getpid()
+    prefix = f"[PID-{pid}] "
+    
+    # 如果是文本字符串，直接添加前缀
+    if args and isinstance(args[0], str):
+        new_args = (prefix + args[0],) + args[1:]
+        print(*new_args, **kwargs)
+    else:
+        # 先打印前缀，再打印原始内容
+        print(prefix, end="")
+        print(*args, **kwargs)
 
 class SymbolicFactorMiner:
     """符号回归因子挖掘器"""
@@ -20,7 +36,14 @@ class SymbolicFactorMiner:
                  tournament_size: int = 20,       # 锦标赛大小
                  stopping_criteria: float = 0.0,  # 停止条件设为0，禁用早停
                  early_stopping: int = 50,        # 早停代数
-                 const_range: Tuple[float, float] = (-1.0, 1.0)):
+                 const_range: Tuple[float, float] = (-1.0, 1.0),
+                 p_crossover: float = 0.7,        # 交叉概率
+                 p_subtree_mutation: float = 0.1, # 子树变异概率
+                 p_hoist_mutation: float = 0.05,  # 提升变异概率
+                 p_point_mutation: float = 0.05,  # 点变异概率
+                 parsimony_coefficient: float = 0.001, # 复杂度惩罚系数
+                 init_depth: Tuple[int, int] = (2, 6), # 初始树深度范围
+                 random_state = None):            # 随机种子
         
         # 初始化函数集，使用内置的保护函数
         # 注意: gplearn默认提供保护版本的数学函数，会自动处理无效值:
@@ -37,6 +60,21 @@ class SymbolicFactorMiner:
         # 时间窗口
         self.windows = [5, 10, 20, 30, 60, 120]
         
+        # 保存所有参数
+        self.population_size = population_size
+        self.generations = generations
+        self.tournament_size = tournament_size
+        self.stopping_criteria = stopping_criteria
+        self.early_stopping = early_stopping
+        self.const_range = const_range
+        self.p_crossover = p_crossover
+        self.p_subtree_mutation = p_subtree_mutation
+        self.p_hoist_mutation = p_hoist_mutation
+        self.p_point_mutation = p_point_mutation
+        self.parsimony_coefficient = parsimony_coefficient
+        self.init_depth = init_depth
+        self.random_state = random_state if random_state is not None else int(time.time())
+        
         # 使用原生的SymbolicRegressor
         self.regressor = SymbolicRegressor(
             population_size=population_size,
@@ -44,20 +82,19 @@ class SymbolicFactorMiner:
             tournament_size=tournament_size,
             const_range=const_range,
             function_set=self.function_set,
-            parsimony_coefficient=0.001,  # 控制公式复杂度的惩罚系数
-            p_crossover=0.7,             # 交叉概率
-            p_subtree_mutation=0.1,      # 子树变异概率
-            p_hoist_mutation=0.05,       # 提升变异概率
-            p_point_mutation=0.05,       # 点变异概率
+            parsimony_coefficient=parsimony_coefficient,
+            p_crossover=p_crossover,
+            p_subtree_mutation=p_subtree_mutation,
+            p_hoist_mutation=p_hoist_mutation,
+            p_point_mutation=p_point_mutation,
             verbose=1,
-            stopping_criteria=stopping_criteria,  # 使用传入的 stopping_criteria
-            random_state=42             # 保持固定种子不变
+            stopping_criteria=stopping_criteria,
+            init_depth=init_depth,
+            random_state=self.random_state
             # 移除feature_names参数，将在运行时动态设置
         )
         
         self.scaler = StandardScaler()
-        self.early_stopping = early_stopping
-        self.stopping_criteria = stopping_criteria
         
         # 添加演化历史记录
         self.evolution_history = []
@@ -129,26 +166,26 @@ class SymbolicFactorMiner:
         self.regressor.feature_names = ['X' + str(i) for i in range(n_features)]
         
         # 打印调试信息
-        print("\n============= 遗传算法训练参数 =============")
-        print(f"特征数量: {X.shape[1]}")
-        print(f"样本数量: {X.shape[0]}")
-        print(f"预测周期: {forward_period}")
-        print(f"种群大小: {self.regressor.population_size}")
-        print(f"进化代数: {self.regressor.generations}")
-        print(f"锦标赛大小: {self.regressor.tournament_size}")
-        print(f"早停代数: {self.early_stopping}")
-        print(f"停止条件阈值: {self.stopping_criteria}")
-        print("=============================================\n")
+        print_with_pid("\n============= 遗传算法训练参数 =============")
+        print_with_pid(f"特征数量: {X.shape[1]}")
+        print_with_pid(f"样本数量: {X.shape[0]}")
+        print_with_pid(f"预测周期: {forward_period}")
+        print_with_pid(f"种群大小: {self.regressor.population_size}")
+        print_with_pid(f"进化代数: {self.regressor.generations}")
+        print_with_pid(f"锦标赛大小: {self.regressor.tournament_size}")
+        print_with_pid(f"早停代数: {self.early_stopping}")
+        print_with_pid(f"停止条件阈值: {self.stopping_criteria}")
+        print_with_pid("=============================================\n")
         
         # 显示指标解释
         self._explain_metrics()
         
         # 在使用原生的gplearn报告器之前先翻译表头
-        print("\n【提示】表头含义:")
-        print("  Gen = 代数       Length = 平均长度      Fitness = 平均适应度")
-        print("  最右侧Length = 最佳长度    最右侧Fitness = 最佳适应度")
-        print("  OOB Fitness = 交叉验证评分    Time Left = 预计剩余时间")
-        print("====================================================\n")
+        print_with_pid("\n【提示】表头含义:")
+        print_with_pid("  Gen = 代数       Length = 平均长度      Fitness = 平均适应度")
+        print_with_pid("  最右侧Length = 最佳长度    最右侧Fitness = 最佳适应度")
+        print_with_pid("  OOB Fitness = 交叉验证评分    Time Left = 预计剩余时间")
+        print_with_pid("====================================================\n")
         
         # 监控变量初始化
         self.evolution_history = []
@@ -166,7 +203,7 @@ class SymbolicFactorMiner:
                     try:
                         original_callback(gp, generation)
                     except Exception as e:
-                        print(f"\n【警告】原始回调执行出错: {str(e)}")
+                        print_with_pid(f"\n【警告】原始回调执行出错: {str(e)}")
                 
                 # 记录最佳程序
                 if hasattr(gp, '_best_program'):
@@ -187,71 +224,71 @@ class SymbolicFactorMiner:
                         self.evolution_history.append(gen_info)
                         
                         # 打印信息
-                        print(f"\n【第{generation}代总结】:")
-                        print(f"  最佳预测能力(适应度): {best_fitness:.6f}")
-                        print(f"  最佳数学表达式: {best_expr}")
+                        print_with_pid(f"\n【第{generation}代总结】:")
+                        print_with_pid(f"  最佳预测能力(适应度): {best_fitness:.6f}")
+                        print_with_pid(f"  最佳数学表达式: {best_expr}")
                         
                         # 添加程序复杂度分析
                         expr_length = best_program.length_
-                        print(f"  表达式复杂度: {expr_length} 个节点")
+                        print_with_pid(f"  表达式复杂度: {expr_length} 个节点")
                         
                         # 添加简单的程序解释
                         try:
                             operators_count = {op: best_expr.count(op) for op in self.function_set if op in best_expr}
                             if operators_count:
-                                print(f"  使用的操作符: {', '.join([f'{op}({cnt}次)' for op, cnt in operators_count.items() if cnt > 0])}")
+                                print_with_pid(f"  使用的操作符: {', '.join([f'{op}({cnt}次)' for op, cnt in operators_count.items() if cnt > 0])}")
                         except Exception as e:
-                            print(f"  无法解析操作符使用情况: {str(e)}")
+                            print_with_pid(f"  无法解析操作符使用情况: {str(e)}")
                         
-                        print(f"  计算耗时: {elapsed:.2f}秒")
+                        print_with_pid(f"  计算耗时: {elapsed:.2f}秒")
                         
                         # 如果是第0代，检查stopping_criteria设置
                         if generation == 0:
-                            print(f"\n【初始种群分析】")
+                            print_with_pid(f"\n【初始种群分析】")
                             stopping_criteria_value = getattr(gp, 'stopping_criteria', '未找到')
-                            print(f"  停止条件阈值设置: {stopping_criteria_value}")
+                            print_with_pid(f"  停止条件阈值设置: {stopping_criteria_value}")
                             
                             if hasattr(gp, 'stopping_criteria') and isinstance(gp.stopping_criteria, (int, float)):
                                 comparison = '超过' if best_fitness > gp.stopping_criteria else '未超过'
-                                print(f"  最佳适应度 {best_fitness} 与停止条件比较: {comparison} 停止条件")
+                                print_with_pid(f"  最佳适应度 {best_fitness} 与停止条件比较: {comparison} 停止条件")
                                 if best_fitness > gp.stopping_criteria and gp.stopping_criteria > 0:
-                                    print(f"  【预警】可能过早触发停止条件! 初始适应度({best_fitness})已经超过停止阈值({gp.stopping_criteria})")
-                                    print(f"  建议: 提高stopping_criteria值或设为0以禁用此条件")
+                                    print_with_pid(f"  【预警】可能过早触发停止条件! 初始适应度({best_fitness})已经超过停止阈值({gp.stopping_criteria})")
+                                    print_with_pid(f"  建议: 提高stopping_criteria值或设为0以禁用此条件")
                         
                         # 检查是否只有第0代
                         if generation == 0 and hasattr(gp, '_iterations') and gp._iterations <= 1:
-                            print("\n【遗传算法异常】只执行了第0代就停止了!")
-                            print("  可能原因:")
-                            print("  1. stopping_criteria设置过低，初始种群就满足了停止条件")
-                            print("  2. 初始种群包含了特别优秀的个体")
-                            print("  3. 算法内部逻辑问题导致提前终止")
-                            print("  建议操作:")
-                            print("  1. 设置stopping_criteria=0禁用早停")
-                            print("  2. 增大random_state值或设为None使用随机种子")
-                            print("  3. 调大p_crossover和p_mutation增加种群多样性")
+                            print_with_pid("\n【遗传算法异常】只执行了第0代就停止了!")
+                            print_with_pid("  可能原因:")
+                            print_with_pid("  1. stopping_criteria设置过低，初始种群就满足了停止条件")
+                            print_with_pid("  2. 初始种群包含了特别优秀的个体")
+                            print_with_pid("  3. 算法内部逻辑问题导致提前终止")
+                            print_with_pid("  建议操作:")
+                            print_with_pid("  1. 设置stopping_criteria=0禁用早停")
+                            print_with_pid("  2. 增大random_state值或设为None使用随机种子")
+                            print_with_pid("  3. 调大p_crossover和p_mutation增加种群多样性")
                             
                         # 当演化继续到第10代时，确认早停已禁用
                         if generation == 10:
-                            print("\n【正常进化确认】")
-                            print("  演化已成功进行了10代，早停机制未触发!")
+                            print_with_pid("\n【正常进化确认】")
+                            print_with_pid("  演化已成功进行了10代，早停机制未触发!")
                             
                         # 每10代输出一次进度
                         if generation > 0 and generation % 10 == 0:
-                            print(f"\n===== 演化进度: {generation}/{gp.generations}代 ({(generation/gp.generations*100):.1f}%) =====")
+                            print_with_pid(f"\n===== 演化进度: {generation}/{gp.generations}代 ({(generation/gp.generations*100):.1f}%) =====")
                             if len(self.evolution_history) >= 2:
                                 try:
                                     first_gen = self.evolution_history[0]
                                     current_gen = self.evolution_history[-1]
                                     if first_gen['best_expr'] == current_gen['best_expr']:
-                                        print("【演化停滞】当前最佳表达式与第0代相同，可能陷入局部最优")
-                                        print("  建议: 调整突变率或使用不同随机种子")
+                                        print_with_pid("【演化停滞】当前最佳表达式与第0代相同，可能陷入局部最优")
+                                        print_with_pid("  建议: 调整突变率或使用不同随机种子")
                                     else:
-                                        print("【演化正常】最佳表达式已经改变，算法在有效搜索")
+                                        print_with_pid("【演化正常】最佳表达式已经改变，算法在有效搜索")
                                     
                                     improvement = current_gen['best_fitness'] - first_gen['best_fitness']
-                                    print(f"  与第0代相比，适应度提升: {improvement:.6f}")
+                                    print_with_pid(f"  与第0代相比，适应度提升: {improvement:.6f}")
                                 except Exception as e:
-                                    print(f"  无法计算演化进度详情: {str(e)}")
+                                    print_with_pid(f"  无法计算演化进度详情: {str(e)}")
                                 
                                 try:
                                     # 计算剩余时间
@@ -269,13 +306,13 @@ class SymbolicFactorMiner:
                                         time_str += f"{int(minutes)}分钟"
                                     time_str += f"{int(seconds)}秒"
                                     
-                                    print(f"  估计剩余时间: {time_str}")
+                                    print_with_pid(f"  估计剩余时间: {time_str}")
                                 except Exception as e:
-                                    print(f"  无法计算剩余时间: {str(e)}")
+                                    print_with_pid(f"  无法计算剩余时间: {str(e)}")
                     except Exception as e:
-                        print(f"\n【警告】处理最佳程序时出错: {str(e)}")
+                        print_with_pid(f"\n【警告】处理最佳程序时出错: {str(e)}")
             except Exception as e:
-                print(f"\n【错误】增强回调执行失败: {str(e)}")
+                print_with_pid(f"\n【错误】增强回调执行失败: {str(e)}")
                 # 即使发生错误，也要确保程序继续运行
         
         # 替换回调函数
@@ -286,28 +323,28 @@ class SymbolicFactorMiner:
         
         # 定义增强的fit方法
         def monitored_fit(X, y, *args, **kwargs):
-            print("\n【调试】开始执行fit方法...")
+            print_with_pid("\n【调试】开始执行fit方法...")
             
             # 检查stopping_criteria属性
-            print(f"【调试】stopping_criteria设置为: {getattr(self.regressor, 'stopping_criteria', '未设置')}")
+            print_with_pid(f"【调试】stopping_criteria设置为: {getattr(self.regressor, 'stopping_criteria', '未设置')}")
             
             # 拦截_run方法以检测早停
             original_run = getattr(self.regressor, '_run', None)
             
             if original_run:
                 def monitored_run(X, y, *args, **kwargs):
-                    print("\n【调试】开始执行_run方法...")
+                    print_with_pid("\n【调试】开始执行_run方法...")
                     result = original_run(X, y, *args, **kwargs)
-                    print(f"\n【调试】_run方法完成，返回结果类型: {type(result)}")
+                    print_with_pid(f"\n【调试】_run方法完成，返回结果类型: {type(result)}")
                     
                     # 检查迭代次数
                     if hasattr(self.regressor, '_iterations'):
-                        print(f"【调试】迭代结束后的_iterations值: {self.regressor._iterations}")
+                        print_with_pid(f"【调试】迭代结束后的_iterations值: {self.regressor._iterations}")
                     
                     # 检查最佳程序
                     if hasattr(self.regressor, '_best_program'):
-                        print(f"【调试】最佳程序表达式: {str(self.regressor._best_program)}")
-                        print(f"【调试】最佳程序适应度: {self.regressor._best_program.raw_fitness_}")
+                        print_with_pid(f"【调试】最佳程序表达式: {str(self.regressor._best_program)}")
+                        print_with_pid(f"【调试】最佳程序适应度: {self.regressor._best_program.raw_fitness_}")
                     
                     return result
                 
@@ -317,32 +354,32 @@ class SymbolicFactorMiner:
             # 执行原始fit方法
             result = original_fit(X, y, *args, **kwargs)
             
-            print(f"\n【调试】fit方法执行完成")
+            print_with_pid(f"\n【调试】fit方法执行完成")
             if hasattr(self.regressor, '_iterations'):
-                print(f"  实际执行迭代次数: {self.regressor._iterations}")
+                print_with_pid(f"  实际执行迭代次数: {self.regressor._iterations}")
                 
                 # 添加这一行来判断是否触发了早停
                 if self.regressor._iterations <= 1:
-                    print("\n【警告】遗传算法提前终止!")
-                    print("  只执行了一代就停止，正在检查原因...")
+                    print_with_pid("\n【警告】遗传算法提前终止!")
+                    print_with_pid("  只执行了一代就停止，正在检查原因...")
                     
                     # 检查可能的早停原因
                     if hasattr(self.regressor, '_best_program'):
                         fitness = abs(self.regressor._best_program.raw_fitness_)
                         if fitness >= self.stopping_criteria:
-                            print(f"  【确认】触发了适应度早停条件: 最佳适应度({fitness}) >= 停止阈值({self.stopping_criteria})")
+                            print_with_pid(f"  【确认】触发了适应度早停条件: 最佳适应度({fitness}) >= 停止阈值({self.stopping_criteria})")
                         else:
-                            print(f"  【排除】适应度早停条件未触发: 最佳适应度({fitness}) < 停止阈值({self.stopping_criteria})")
+                            print_with_pid(f"  【排除】适应度早停条件未触发: 最佳适应度({fitness}) < 停止阈值({self.stopping_criteria})")
                     
                     # 检查固定种子问题
-                    print(f"  【排查】随机种子设置为: {getattr(self.regressor, 'random_state', '未知')}")
-                    print(f"  【建议】尝试修改random_state=None以使用不同随机种子")
+                    print_with_pid(f"  【排查】随机种子设置为: {getattr(self.regressor, 'random_state', '未知')}")
+                    print_with_pid(f"  【建议】尝试修改random_state=None以使用不同随机种子")
             
             # 恢复原始_run方法
             if original_run:
                 self.regressor._run = original_run
                 
-            print(f"  总耗时: {time.time() - start_time:.2f}秒")
+            print_with_pid(f"  总耗时: {time.time() - start_time:.2f}秒")
             
             return result
         
@@ -354,46 +391,46 @@ class SymbolicFactorMiner:
             self.regressor.fit(X, y)
             
             # 训练后检查
-            print("\n============= 训练完成信息 =============")
+            print_with_pid("\n============= 训练完成信息 =============")
             if hasattr(self.regressor, '_iterations'):
-                print(f"实际执行代数: {self.regressor._iterations}/{self.regressor.generations}")
+                print_with_pid(f"实际执行代数: {self.regressor._iterations}/{self.regressor.generations}")
                 
                 if self.regressor._iterations < self.regressor.generations:
-                    print(f"\n【训练提前结束】实际执行了{self.regressor._iterations}代，少于设定的{self.regressor.generations}代")
-                    print("可能原因:")
-                    print("1. 找到满足stopping_criteria的解")
-                    print("2. 初始种群已包含最优解")
-                    print("3. 算法内部逻辑提前终止")
+                    print_with_pid(f"\n【训练提前结束】实际执行了{self.regressor._iterations}代，少于设定的{self.regressor.generations}代")
+                    print_with_pid("可能原因:")
+                    print_with_pid("1. 找到满足stopping_criteria的解")
+                    print_with_pid("2. 初始种群已包含最优解")
+                    print_with_pid("3. 算法内部逻辑提前终止")
             
             # 显示演化历史统计
             if self.evolution_history:
                 first_gen = self.evolution_history[0]
                 last_gen = self.evolution_history[-1]
                 
-                print("\n【演化历史总结】")
-                print(f"初始(第0代):")
-                print(f"  最佳适应度: {first_gen['best_fitness']:.6f}")
-                print(f"  最佳表达式: {first_gen['best_expr']}")
+                print_with_pid("\n【演化历史总结】")
+                print_with_pid(f"初始(第0代):")
+                print_with_pid(f"  最佳适应度: {first_gen['best_fitness']:.6f}")
+                print_with_pid(f"  最佳表达式: {first_gen['best_expr']}")
                 
-                print(f"\n最终(第{len(self.evolution_history)-1}代):")
-                print(f"  最佳适应度: {last_gen['best_fitness']:.6f}")
-                print(f"  最佳表达式: {last_gen['best_expr']}")
+                print_with_pid(f"\n最终(第{len(self.evolution_history)-1}代):")
+                print_with_pid(f"  最佳适应度: {last_gen['best_fitness']:.6f}")
+                print_with_pid(f"  最佳表达式: {last_gen['best_expr']}")
                 
                 # 计算改进幅度
                 fitness_improvement = last_gen['best_fitness'] - first_gen['best_fitness']
                 improvement_percent = (fitness_improvement / first_gen['best_fitness']) * 100 if first_gen['best_fitness'] > 0 else 0
                 
-                print(f"\n【优化效果】")
-                print(f"  适应度绝对提升: {fitness_improvement:.6f}")
+                print_with_pid(f"\n【优化效果】")
+                print_with_pid(f"  适应度绝对提升: {fitness_improvement:.6f}")
                 if fitness_improvement > 0:
-                    print(f"  适应度相对提升: {improvement_percent:.2f}%")
+                    print_with_pid(f"  适应度相对提升: {improvement_percent:.2f}%")
                 
                 if first_gen['best_expr'] == last_gen['best_expr'] and len(self.evolution_history) > 1:
-                    print("\n【重要发现】第一代和最后一代的最佳表达式完全相同!")
-                    print("这意味着:")
-                    print("1. 算法在第一代就找到了最优解，后续未能改进")
-                    print("2. 可能需要调整算法参数以增加种群多样性")
-                    print("3. 建议尝试不同的随机种子或增大种群规模")
+                    print_with_pid("\n【重要发现】第一代和最后一代的最佳表达式完全相同!")
+                    print_with_pid("这意味着:")
+                    print_with_pid("1. 算法在第一代就找到了最优解，后续未能改进")
+                    print_with_pid("2. 可能需要调整算法参数以增加种群多样性")
+                    print_with_pid("3. 建议尝试不同的随机种子或增大种群规模")
                 
                 # 总耗时统计
                 total_time = last_gen['elapsed_time']
@@ -406,10 +443,10 @@ class SymbolicFactorMiner:
                     time_str += f"{int(minutes)}分钟"
                 time_str += f"{int(seconds)}秒"
                 
-                print(f"\n【执行统计】")
-                print(f"  总耗时: {time_str}")
-                print(f"  每代平均耗时: {total_time/len(self.evolution_history):.2f}秒")
-                print("=========================================")
+                print_with_pid(f"\n【执行统计】")
+                print_with_pid(f"  总耗时: {time_str}")
+                print_with_pid(f"  每代平均耗时: {total_time/len(self.evolution_history):.2f}秒")
+                print_with_pid("=========================================")
         
         except Exception as e:
             logging.error(f"遗传算法训练出错: {str(e)}")
@@ -601,27 +638,27 @@ class SymbolicFactorMiner:
 
     def _explain_metrics(self):
         """解释进化过程中显示的各项指标"""
-        print("\n=================== 遗传算法指标说明 ===================")
-        print("代数：当前进化的代数（从0开始计数）")
-        print("  - 第0代是初始随机生成的种群")
-        print("  - 数字越大表示进化越多轮次")
-        print("")
-        print("平均长度：当前种群中所有程序的平均复杂度")
-        print("  - 值越大意味着表达式包含更多的运算符和变量")
-        print("  - 一般会随着进化逐渐下降，算法倾向于寻找简单的解")
-        print("")
-        print("平均适应度：当前种群所有程序的平均表现分数")
-        print("  - 值越大表示程序平均预测能力越强")
-        print("  - 一般会随着进化逐渐下降（因为我们在最小化误差）")
-        print("")
-        print("最佳长度：当前最佳程序的复杂度")
-        print("  - 表示当前找到的最好程序包含的节点数量")
-        print("")
-        print("最佳适应度：当前最佳程序的表现分数")
-        print("  - 值越大表示预测能力越强")
-        print("  - 不变表示未找到更好的程序")
-        print("")
-        print("OOB适应度：对未训练数据的评估分数（通常不启用）")
-        print("")
-        print("预计剩余时间：完成所有进化预计还需要的时间")
-        print("==================================================\n")
+        print_with_pid("\n=================== 遗传算法指标说明 ===================")
+        print_with_pid("代数：当前进化的代数（从0开始计数）")
+        print_with_pid("  - 第0代是初始随机生成的种群")
+        print_with_pid("  - 数字越大表示进化越多轮次")
+        print_with_pid("")
+        print_with_pid("平均长度：当前种群中所有程序的平均复杂度")
+        print_with_pid("  - 值越大意味着表达式包含更多的运算符和变量")
+        print_with_pid("  - 一般会随着进化逐渐下降，算法倾向于寻找简单的解")
+        print_with_pid("")
+        print_with_pid("平均适应度：当前种群所有程序的平均表现分数")
+        print_with_pid("  - 值越大表示程序平均预测能力越强")
+        print_with_pid("  - 一般会随着进化逐渐下降（因为我们在最小化误差）")
+        print_with_pid("")
+        print_with_pid("最佳长度：当前最佳程序的复杂度")
+        print_with_pid("  - 表示当前找到的最好程序包含的节点数量")
+        print_with_pid("")
+        print_with_pid("最佳适应度：当前最佳程序的表现分数")
+        print_with_pid("  - 值越大表示预测能力越强")
+        print_with_pid("  - 不变表示未找到更好的程序")
+        print_with_pid("")
+        print_with_pid("OOB适应度：对未训练数据的评估分数（通常不启用）")
+        print_with_pid("")
+        print_with_pid("预计剩余时间：完成所有进化预计还需要的时间")
+        print_with_pid("==================================================\n")
