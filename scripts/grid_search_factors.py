@@ -294,6 +294,7 @@ class FactorGridSearch:
         self.report_file = f"{results_dir}/grid_search_report_{self.timestamp}.md"
         
         print_with_pid(f"初始化网格搜索，结果将保存到: {self.results_file}")
+        print_with_pid(f"最终报告将保存到: {self.report_file}")
     
     def _load_data(self) -> pd.DataFrame:
         """加载所有5分钟K线数据"""
@@ -452,21 +453,25 @@ class FactorGridSearch:
         process_args = [(params, data) for params in param_combinations]
         
         # 使用多进程执行搜索
+        results = []
         with mp.Pool(processes=min(mp.cpu_count(), len(param_combinations)), initializer=initialize_process) as pool:
-            # 使用imap有序地获取结果 - 不再使用lambda
-            results = []
+            # 使用imap有序地获取结果
             for result in pool.imap(self._process_param_search, process_args):
                 results.append(result)
-                # 实时保存结果
+                # 实时保存结果 - 但不生成报告
                 with open(self.results_file, 'wb') as f:
                     pickle.dump(results, f)
                 
-                # 更新报告
-                self._generate_report(results)
+                # 打印结果进度
+                print_with_pid(f"完成进度: {len(results)}/{len(param_combinations)} 组合")
+        
+        # 所有搜索结束后，生成一次最终报告
+        print_with_pid("所有参数组合搜索完成，开始生成最终报告...")
+        self._generate_report(results)
         
         print_with_pid("网格搜索完成!")
         print_with_pid(f"结果已保存到: {self.results_file}")
-        print_with_pid(f"报告已生成: {self.report_file}")
+        print_with_pid(f"最终报告已生成: {self.report_file}")
     
     def _generate_report(self, results: List[Dict]):
         """生成网格搜索报告"""
