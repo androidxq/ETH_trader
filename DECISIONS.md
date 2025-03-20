@@ -168,3 +168,176 @@
 5. 实盘交易风控方案
 6. 数据更新策略（实时/定时）
 7. 因子组合策略选择
+
+# 修改符号回归器的参数配置
+miner = SymbolicFactorMiner(
+    # 基本参数保持不变
+    population_size=5000,
+    generations=200,
+    
+    # 降低锦标赛大小，减少选择压力
+    tournament_size=15,
+    
+    # 增加变异参数
+    p_crossover=0.65,           # 降低交叉概率（默认0.9）
+    p_subtree_mutation=0.25,    # 大幅增加子树变异概率（默认0.01）
+    p_hoist_mutation=0.15,      # 增加提升变异概率（默认0.01）
+    p_point_mutation=0.15,      # 增加点变异概率（默认0.01）
+    
+    # 控制种群多样性的其他参数
+    parsimony_coefficient=0.005, # 轻微惩罚复杂表达式
+    const_range=(-3.0, 3.0),     # 扩大常数范围
+    
+    # 保护函数设置
+    function_set=['add', 'sub', 'mul', 'div_protected', 'sqrt_protected', 
+                 'log_protected', 'sin', 'cos'],
+    
+    # 初始树深度范围扩大
+    init_depth=(2, 6),
+    
+    # 每次运行使用不同的随机种子
+    random_state=None,          
+    
+    # 早停参数调整
+    stopping_criteria=0.0001,    # 降低提前停止的阈值
+    early_stopping=50            # 增加早停的代数
+)
+
+def mine_factors(self, data, forward_period=24, n_best=5):
+    # 使用多个随机种子
+    best_factors = []
+    for seed in [None, 42, 123, 456, 789]:
+        symbolic_regressor = SymbolicRegressor(
+            # 其他参数...
+            random_state=seed
+        )
+        # 训练和评估...
+        # 将结果添加到best_factors...
+    
+    # 返回最佳结果...
+
+def _div_protected(x1, x2):
+    """保护除法，避免除以零"""
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return np.where(np.abs(x2) > 1e-10, np.divide(x1, x2), 0.)
+
+def _sqrt_protected(x):
+    """保护平方根，避免负数开方"""
+    return np.sqrt(np.abs(x))
+
+def _log_protected(x):
+    """保护对数，避免负数或零取对数"""
+    return np.log(np.abs(x) + 1e-10)
+        
+def _sin(x):
+    """正弦函数"""
+    return np.sin(x)
+
+def _cos(x):
+    """余弦函数"""
+    return np.cos(x)
+
+def _safe_log(x):
+    """对数安全版本"""
+    return np.log(np.abs(x) + 1e-10)
+
+def _safe_div(x1, x2):
+    """除法安全版本"""
+    return np.where(np.abs(x2) > 1e-10, np.divide(x1, x2), 0.)
+
+def _safe_sqrt(x):
+    """平方根安全版本"""
+    return np.sqrt(np.abs(x))
+
+def _evaluate_factor(self, factor_values, target):
+    # 检查无效值
+    if np.any(np.isnan(factor_values)) or np.any(np.isinf(factor_values)):
+        return {
+            'ic': 0,
+            'stability': 0,
+            'long_returns': 0,
+            'short_returns': 0,
+            'complexity': 999,  # 惩罚无效表达式
+            'score': -999      # 严重惩罚
+        }
+        
+    # 正常评估逻辑...
+
+## 2025-03-20
+### 14. 符号回归安全函数实现 (2025-03-20 10:15:30)
+- 决策：实现数学安全函数库解决无效表达式问题
+- 具体方案：
+  - 添加`_safe_log`、`_safe_div`、`_safe_sqrt`等安全函数
+  - 将函数集替换为安全函数集
+  - 在评估函数中添加无效值检测与惩罚
+  - 实现多随机种子策略提高搜索广度
+- 原因：
+  - 解决`log(-1.001)`等无效数学表达式问题
+  - 避免NaN和Inf值导致的评估失败
+  - 增加搜索空间多样性
+  - 提高最终因子的数学合理性和有效性
+
+### 10:15
+- 解决符号回归因子挖掘无效表达式问题：
+  - 问题：算法生成无效数学表达式如`log(-1.001)`
+  - 问题影响：导致评估过程中出现NaN值，影响因子质量
+  - 解决方案：
+    1. 实现数学安全函数库
+    2. 对无效值进行检测和惩罚
+    3. 增加变异率提高种群多样性
+    4. 实现多随机种子策略
+
+- 优化SymbolicFactorMiner类：
+  - 增加变异参数控制：
+    - p_crossover=0.65 (降低交叉概率)
+    - p_subtree_mutation=0.25 (增加子树变异)
+    - p_hoist_mutation=0.15 (增加提升变异)
+    - p_point_mutation=0.15 (增加点变异)
+  - 添加安全函数集合
+  - 优化评估函数处理无效表达式
+  - 实现多种子策略增加解空间探索
+
+### 问题与解决方案
+1. 问题：符号回归生成数学无效表达式
+   - 解决：实现保护函数和数学安全函数库
+   
+2. 问题：算法过早收敛到简单表达式
+   - 解决：
+     - 增加变异率和多样性参数
+     - 降低锦标赛选择压力(tournament_size=15)
+     - 拓展初始深度范围(init_depth=(2, 6))
+
+### 下一步计划
+1. 运行网格搜索验证安全函数有效性
+2. 分析不同参数组合对因子质量的影响
+3. 考虑添加更多数学函数丰富表达能力
+4. 实现因子组合策略
+
+## 版本历史
+- v0.1.0 (2025-03-18)
+  - 项目初始化
+  - 完成基础架构设计
+  - 实现数据获取模块
+  - 开发符号回归因子挖掘器
+- v0.2.0 (2025-03-19)
+  - 实现参数网格搜索功能
+  - 改进因子评估系统
+  - 优化数据处理路径适配
+- v0.2.1 (2025-03-20)
+  - 实现数学安全函数库
+  - 优化符号回归变异参数
+  - 添加多随机种子策略
+  - 改进因子评估对无效值处理
+
+## 系统架构
+系统分为以下主要模块：
+
+### 3. 因子研究模块 (factor_research)
+- 技术指标计算
+- 自定义因子生成
+- 符号回归因子挖掘
+  - 数学安全函数库
+  - 多样化变异策略
+  - 多随机种子探索
+- 因子评估和筛选
+- 参数网格搜索优化
