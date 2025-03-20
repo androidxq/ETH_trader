@@ -160,109 +160,6 @@
   - 动态随机种子有助于探索更广泛的解空间
   - 平衡可复现性和搜索广度的需求
 
-## 待定重要决策
-1. 数据完整性检查方案
-2. 实时数据更新策略
-3. 回测系统架构
-4. 多因子模型选择方法
-5. 实盘交易风控方案
-6. 数据更新策略（实时/定时）
-7. 因子组合策略选择
-
-# 修改符号回归器的参数配置
-miner = SymbolicFactorMiner(
-    # 基本参数保持不变
-    population_size=5000,
-    generations=200,
-    
-    # 降低锦标赛大小，减少选择压力
-    tournament_size=15,
-    
-    # 增加变异参数
-    p_crossover=0.65,           # 降低交叉概率（默认0.9）
-    p_subtree_mutation=0.25,    # 大幅增加子树变异概率（默认0.01）
-    p_hoist_mutation=0.15,      # 增加提升变异概率（默认0.01）
-    p_point_mutation=0.15,      # 增加点变异概率（默认0.01）
-    
-    # 控制种群多样性的其他参数
-    parsimony_coefficient=0.005, # 轻微惩罚复杂表达式
-    const_range=(-3.0, 3.0),     # 扩大常数范围
-    
-    # 保护函数设置
-    function_set=['add', 'sub', 'mul', 'div_protected', 'sqrt_protected', 
-                 'log_protected', 'sin', 'cos'],
-    
-    # 初始树深度范围扩大
-    init_depth=(2, 6),
-    
-    # 每次运行使用不同的随机种子
-    random_state=None,          
-    
-    # 早停参数调整
-    stopping_criteria=0.0001,    # 降低提前停止的阈值
-    early_stopping=50            # 增加早停的代数
-)
-
-def mine_factors(self, data, forward_period=24, n_best=5):
-    # 使用多个随机种子
-    best_factors = []
-    for seed in [None, 42, 123, 456, 789]:
-        symbolic_regressor = SymbolicRegressor(
-            # 其他参数...
-            random_state=seed
-        )
-        # 训练和评估...
-        # 将结果添加到best_factors...
-    
-    # 返回最佳结果...
-
-def _div_protected(x1, x2):
-    """保护除法，避免除以零"""
-    with np.errstate(divide='ignore', invalid='ignore'):
-        return np.where(np.abs(x2) > 1e-10, np.divide(x1, x2), 0.)
-
-def _sqrt_protected(x):
-    """保护平方根，避免负数开方"""
-    return np.sqrt(np.abs(x))
-
-def _log_protected(x):
-    """保护对数，避免负数或零取对数"""
-    return np.log(np.abs(x) + 1e-10)
-        
-def _sin(x):
-    """正弦函数"""
-    return np.sin(x)
-
-def _cos(x):
-    """余弦函数"""
-    return np.cos(x)
-
-def _safe_log(x):
-    """对数安全版本"""
-    return np.log(np.abs(x) + 1e-10)
-
-def _safe_div(x1, x2):
-    """除法安全版本"""
-    return np.where(np.abs(x2) > 1e-10, np.divide(x1, x2), 0.)
-
-def _safe_sqrt(x):
-    """平方根安全版本"""
-    return np.sqrt(np.abs(x))
-
-def _evaluate_factor(self, factor_values, target):
-    # 检查无效值
-    if np.any(np.isnan(factor_values)) or np.any(np.isinf(factor_values)):
-        return {
-            'ic': 0,
-            'stability': 0,
-            'long_returns': 0,
-            'short_returns': 0,
-            'complexity': 999,  # 惩罚无效表达式
-            'score': -999      # 严重惩罚
-        }
-        
-    # 正常评估逻辑...
-
 ## 2025-03-20
 ### 14. 符号回归安全函数实现 (2025-03-20 10:15:30)
 - 决策：实现数学安全函数库解决无效表达式问题
@@ -341,3 +238,103 @@ def _evaluate_factor(self, factor_values, target):
   - 多随机种子探索
 - 因子评估和筛选
 - 参数网格搜索优化
+
+# 1. 完全不同的搜索策略 - 在symbolic_miner.py中修改
+self.regressor = SymbolicRegressor(
+    # 基础参数
+    population_size=8000,        # 大幅增加种群大小
+    generations=400,             # 增加代数
+    
+    # 选择压力大幅降低
+    tournament_size=5,           # 极小的锦标赛大小
+    
+    # 极大的变异率
+    p_crossover=0.3,             # 大幅降低交叉概率
+    p_subtree_mutation=0.3,      # 大幅增加子树变异
+    p_hoist_mutation=0.2,        # 大幅增加提升变异
+    p_point_mutation=0.2,        # 大幅增加点变异
+    
+    # 减少复杂度惩罚
+    parsimony_coefficient=0.0001, # 几乎不惩罚复杂表达式
+    
+    # 强制使用随机种子
+    random_state=int(time.time()), # 使用当前时间作为种子
+    
+    # 禁用早停
+    stopping_criteria=0.0,       # 完全禁用早停
+    early_stopping=None          # 禁用连续代数早停
+)
+
+### 配置系统重构决策
+**问题**：配置参数分散在多个文件中，难以管理和维护。
+
+**决策**：创建统一的配置管理系统。
+- 将所有配置集中到 `factor_research/config/config.py`
+- 按功能模块组织配置参数
+- 提供向后兼容的接口
+
+**理由**：
+- 提高代码可维护性
+- 减少配置冲突
+- 便于参数调整和实验
+
+### 网格搜索参数优化决策
+**问题**：参数组合数量过多（270种），导致计算时间过长。
+
+**决策**：优化参数范围和组合。
+- 减少参数值数量
+- 使用更大的步长
+- 添加特殊组合探索中间值
+
+**理由**：
+- 提高搜索效率
+- 保持参数覆盖范围
+- 平衡计算资源和搜索效果
+
+### 多进程支持决策
+**问题**：网格搜索执行时间长，需要提高效率。
+
+**决策**：实现多进程并行执行。
+- 使用 Python multiprocessing
+- 动态分配任务
+- 实时进度显示
+
+**理由**：
+- 充分利用多核CPU
+- 提高整体执行效率
+- 保持代码可维护性
+
+### 遗传算法参数决策
+**问题**：需要确定遗传算法的关键参数。
+
+**决策**：设置以下默认参数：
+- population_size: 3000
+- generations: 100
+- tournament_size: 10
+- early_stopping: 30
+- stopping_criteria: 0.001
+
+**理由**：
+- 平衡计算资源和效果
+- 考虑早停机制
+- 参考相关研究经验
+
+### 数据存储决策
+**问题**：需要高效的数据存储方案。
+
+**决策**：使用CSV格式存储K线数据。
+- 按时间范围分文件存储
+- 使用标准化的列名
+- 实现增量更新
+
+**理由**：
+- 简单易用
+- 便于调试和查看
+- 支持增量更新
+
+## 待决策事项
+1. 因子评估指标的选择
+2. 回测系统的设计
+3. 风险控制策略
+4. 性能优化方案
+5. 部署架构选择

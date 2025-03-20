@@ -1,4 +1,85 @@
-# ETH 交易系统
+# ETH 量化交易系统
+
+## 项目简介
+这是一个基于遗传算法的 ETH 量化交易系统，使用符号回归方法挖掘交易因子。
+
+## 主要功能
+- 数据获取：自动下载历史K线数据
+- 因子挖掘：使用遗传算法进行因子挖掘
+- 参数优化：网格搜索优化算法参数
+- 多进程支持：并行执行参数搜索
+- 结果分析：自动生成分析报告
+
+## 项目结构
+```
+ETH_trader/
+├── data/                  # 数据存储目录
+│   └── kline/            # K线数据
+├── data_fetcher/         # 数据获取模块
+├── factor_research/      # 因子研究模块
+│   ├── config/          # 配置文件
+│   ├── data_loader.py   # 数据加载
+│   └── symbolic_miner.py # 因子挖掘
+├── scripts/              # 执行脚本
+│   ├── download_history.py  # 下载历史数据
+│   └── grid_search_factors.py # 网格搜索
+├── tests/                # 测试用例
+└── results/              # 结果输出
+    └── grid_search/      # 网格搜索结果
+```
+
+## 配置系统
+所有配置参数统一在 `factor_research/config/config.py` 中管理：
+- 数据配置 (DATA_CONFIG)
+- 遗传算法配置 (GA_BASE_CONFIG)
+- 网格搜索配置 (GRID_SEARCH_CONFIG)
+- 多进程配置 (MULTIPROCESSING_CONFIG)
+- 进度显示配置 (PROGRESS_CONFIG)
+- 日志配置 (LOGGING_CONFIG)
+
+## 使用方法
+
+### 1. 安装依赖
+```bash
+pip install -r requirements.txt
+```
+
+### 2. 下载历史数据
+```bash
+python scripts/download_history.py
+```
+
+### 3. 运行网格搜索
+```bash
+python scripts/grid_search_factors.py
+```
+
+## 参数说明
+### 遗传算法参数
+- population_size: 种群大小
+- generations: 进化代数
+- tournament_size: 锦标赛大小
+- stopping_criteria: 停止条件阈值
+- early_stopping: 早停代数
+- const_range: 常数范围
+
+### 网格搜索参数
+- forward_period: 预测周期 [6, 12, 24]
+- generations: 进化代数 [50, 100, 200]
+- population_size: 种群大小 [2000, 4000, 8000]
+- tournament_size: 锦标赛大小 [2, 5, 8]
+
+## 结果分析
+系统会自动生成以下结果：
+1. CSV格式的详细结果
+2. Markdown格式的分析报告
+3. 最佳参数组合推荐
+
+## 开发日志
+详细开发记录请查看 [DEVLOG.md](DEVLOG.md)
+
+## 决策记录
+重要决策记录请查看 [DECISIONS.md](DECISIONS.md)
 
 ## 项目概述
 本项目是一个基于币安交易所的 ETH 自动交易系统，支持数据获取、因子生成、策略回测和实盘交易。
