@@ -112,6 +112,11 @@ python scripts/run_grid_search_ui.py
   - 优化遗传算法参数配置
   - 改进适应度计算方法
   - 增强演化过程监控机制
+- v0.3.0 (2025-03-20 09:15:42)
+  - 新增PyQtGraph高性能K线图显示模块
+  - 支持历史K线数据浏览与交互
+  - 优化数据加载和缓存机制
+  - 实现鼠标滚轮缩放和键盘导航功能
 
 ## 系统架构
 系统分为以下主要模块：
@@ -137,7 +142,7 @@ python scripts/run_grid_search_ui.py
 - 因子挖掘进度实时显示
 - 进程内存占用监控
 - 搜索结果动态查看
-- K线数据可视化（计划中）
+- K线数据可视化
 - 因子性能评估（计划中）
 
 ### 5. 策略模块 (strategy)
@@ -162,6 +167,13 @@ python scripts/run_grid_search_ui.py
 - 风险监控
 - 异常报警
 
+### 9. K线图显示模块 (kline_view)
+- 基于PyQtGraph的高性能K线图
+- 支持多币种、多时间周期切换
+- 实时交互：缩放、拖动、跳转到日期
+- 支持查看完整历史数据
+- 键盘快捷键导航
+
 ## 项目结构
 ```plaintext
 ETH_trader/
@@ -180,6 +192,8 @@ ETH_trader/
 ├── scripts/                # 脚本工具
 │   ├── download_history.py # 历史数据下载
 │   ├── grid_search_factors.py # 参数网格搜索
+│   ├── kline_view_pyqtgraph.py # K线图显示模块
+│   ├── run_kline_view_pyqtgraph.py # 运行K线图显示
 ├── results/                # 结果存储
 │   ├── grid_search/        # 网格搜索结果
 ├── tests/                  # 单元测试
@@ -189,3 +203,24 @@ ETH_trader/
 ├── DECISIONS.md            # 决策记录
 ├── DEVLOG.md               # 开发日志
 └── README.md               # 项目说明
+```
+
+## 运行K线图显示
+```bash
+python scripts/run_kline_view_pyqtgraph.py
+```
+
+### K线图功能
+- 支持多时间周期：1分钟至日线
+- 币种：ETHUSDT永续合约
+- 交互功能：
+  - 鼠标滚轮：放大/缩小K线视图
+  - 左右按键：导航历史数据
+  - Home键：重置到最新数据
+  - +/-键：调整视图范围
+  - 跳转到日期：精确定位历史时间点
+- 显示内容：
+  - K线实体（红绿颜色区分涨跌）
+  - 成交量柱状图
+  - 十字光标位置信息
+  - 价格和时间信息
