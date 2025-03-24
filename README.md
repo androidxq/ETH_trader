@@ -9,6 +9,8 @@
 - 参数优化：网格搜索优化算法参数
 - 多进程支持：并行执行参数搜索
 - 结果分析：自动生成分析报告
+- 进度监控UI：可视化显示挖掘进度和内存占用
+- 内存优化：自动管理进程内存，防止内存泄漏
 
 ## 项目结构
 ```
@@ -52,6 +54,11 @@ python scripts/download_history.py
 ### 3. 运行网格搜索
 ```bash
 python scripts/grid_search_factors.py
+```
+
+### 4. 启动UI监控界面
+```bash
+python scripts/run_grid_search_ui.py
 ```
 
 ## 参数说明
@@ -126,23 +133,30 @@ python scripts/grid_search_factors.py
 - 因子评估和筛选
 - 参数网格搜索优化
 
-### 4. 策略模块 (strategy)
+### 4. UI监控模块 (grid_search_ui)
+- 因子挖掘进度实时显示
+- 进程内存占用监控
+- 搜索结果动态查看
+- K线数据可视化（计划中）
+- 因子性能评估（计划中）
+
+### 5. 策略模块 (strategy)
 - 因子组合策略
 - 交易信号生成
 - 仓位管理
 - 风险控制
 
-### 5. 回测模块 (backtest)
+### 6. 回测模块 (backtest)
 - 历史数据回测
 - 策略评估
 - 绩效分析
 
-### 6. 交易执行模块 (execution)
+### 7. 交易执行模块 (execution)
 - 交易所接口对接
 - 订单管理
 - 仓位跟踪
 
-### 7. 监控模块 (monitor)
+### 8. 监控模块 (monitor)
 - 策略监控
 - 资金监控
 - 风险监控

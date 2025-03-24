@@ -30,6 +30,7 @@ from PyQt6.QtGui import QFont, QIcon, QColor, QPalette
 # 导入项目模块
 from scripts.grid_search_factors import FactorGridSearch
 from factor_research.config.grid_search_config import PARAM_GRID, SPECIAL_COMBINATIONS, FIXED_PARAMS
+from scripts.kline_view import KlineViewWidget
 
 
 # 定义可以被pickle的函数（移到类外部）
@@ -393,7 +394,7 @@ class GridSearchUI(QMainWindow):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle("ETH因子网格搜索")
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(1200, 800)  # 增加窗口默认大小
         
         # 设置Windows 11风格的边距和间距，调整颜色对比度
         self.setStyleSheet("""
@@ -500,11 +501,21 @@ class GridSearchUI(QMainWindow):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
         
-        # ======= 头部区域 =======
-        header_group = QGroupBox("网格搜索状态")
-        header_layout = QVBoxLayout(header_group)
-        header_layout.setContentsMargins(15, 25, 15, 15)
-        header_layout.setSpacing(10)
+        # ======= 创建主标签页 =======
+        main_tabs = QTabWidget()
+        main_tabs.setMinimumHeight(650)  # 确保标签页有足够的高度
+        
+        # ======= 1. 网格搜索状态标签页 =======
+        status_tab = QWidget()
+        status_layout = QVBoxLayout(status_tab)
+        status_layout.setContentsMargins(15, 15, 15, 15)
+        status_layout.setSpacing(15)
+        
+        # 创建状态组
+        status_group = QGroupBox("网格搜索状态")
+        status_inner_layout = QVBoxLayout(status_group)
+        status_inner_layout.setContentsMargins(15, 25, 15, 15)
+        status_inner_layout.setSpacing(20)
         
         # 总进度
         total_progress_layout = QHBoxLayout()
@@ -512,9 +523,10 @@ class GridSearchUI(QMainWindow):
         self.total_progress_bar = QProgressBar()
         self.total_progress_bar.setRange(0, 100)
         self.total_progress_bar.setValue(0)
+        self.total_progress_bar.setMinimumHeight(25)  # 增加进度条高度
         total_progress_layout.addWidget(self.total_progress_label, 3)
         total_progress_layout.addWidget(self.total_progress_bar, 7)
-        header_layout.addLayout(total_progress_layout)
+        status_inner_layout.addLayout(total_progress_layout)
         
         # 当前批次进度
         batch_progress_layout = QHBoxLayout()
@@ -522,9 +534,10 @@ class GridSearchUI(QMainWindow):
         self.batch_progress_bar = QProgressBar()
         self.batch_progress_bar.setRange(0, 100)
         self.batch_progress_bar.setValue(0)
+        self.batch_progress_bar.setMinimumHeight(25)  # 增加进度条高度
         batch_progress_layout.addWidget(self.batch_progress_label, 3)
         batch_progress_layout.addWidget(self.batch_progress_bar, 7)
-        header_layout.addLayout(batch_progress_layout)
+        status_inner_layout.addLayout(batch_progress_layout)
         
         # 资源使用情况
         resource_layout = QHBoxLayout()
@@ -532,54 +545,84 @@ class GridSearchUI(QMainWindow):
         self.memory_label = QLabel("内存使用率: 0%")
         font = self.process_label.font()
         font.setBold(True)
+        font.setPointSize(11)  # 增加字体大小
         self.process_label.setFont(font)
         self.memory_label.setFont(font)
         resource_layout.addWidget(self.process_label)
-        resource_layout.addSpacing(30)
+        resource_layout.addSpacing(50)
         resource_layout.addWidget(self.memory_label)
         resource_layout.addStretch()
-        header_layout.addLayout(resource_layout)
+        status_inner_layout.addLayout(resource_layout)
         
-        # 进程信息区域
+        # 状态信息
+        status_info_layout = QHBoxLayout()
+        self.status_label = QLabel("状态: 等待开始")
+        status_font = self.status_label.font()
+        status_font.setBold(True)
+        status_font.setPointSize(11)  # 增加字体大小
+        self.status_label.setFont(status_font)
+        status_info_layout.addWidget(self.status_label)
+        status_info_layout.addStretch()
+        status_inner_layout.addLayout(status_info_layout)
+        
+        # 添加到状态标签页
+        status_layout.addWidget(status_group)
+        
+        # 添加一个简单的状态日志
+        status_log_group = QGroupBox("状态日志")
+        status_log_layout = QVBoxLayout(status_log_group)
+        status_log_layout.setContentsMargins(15, 25, 15, 15)
+        
+        self.status_log_text = QTextEdit()
+        self.status_log_text.setReadOnly(True)
+        self.status_log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        status_log_layout.addWidget(self.status_log_text)
+        
+        status_layout.addWidget(status_log_group)
+        
+        main_tabs.addTab(status_tab, "搜索状态")
+        
+        # ======= 2. 进程信息标签页 =======
+        process_tab = QWidget()
+        process_layout = QVBoxLayout(process_tab)
+        process_layout.setContentsMargins(15, 15, 15, 15)
+        process_layout.setSpacing(15)
+        
         process_info_group = QGroupBox("进程信息")
         process_info_layout = QVBoxLayout(process_info_group)
-        process_info_layout.setContentsMargins(15, 15, 15, 15)
+        process_info_layout.setContentsMargins(15, 25, 15, 15)
         
         # 创建进程信息表格
         self.process_table = QTableWidget(0, 3)
         self.process_table.setHorizontalHeaderLabels(["进程ID", "CPU使用率", "内存使用率"])
-        self.process_table.horizontalHeader().setStretchLastSection(True)
-        self.process_table.setColumnWidth(0, 100)
-        self.process_table.setColumnWidth(1, 100)
-        self.process_table.setColumnWidth(2, 100)
+        
+        # 设置表格列宽和行高
+        header = self.process_table.horizontalHeader()
+        header.setSectionResizeMode(0, header.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, header.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, header.ResizeMode.Stretch)
+        self.process_table.setColumnWidth(0, 200)
+        self.process_table.setColumnWidth(1, 200)
+        self.process_table.verticalHeader().setDefaultSectionSize(35)  # 增加行高
+        
         process_info_layout.addWidget(self.process_table)
+        process_layout.addWidget(process_info_group)
         
-        header_layout.addWidget(process_info_group)
+        main_tabs.addTab(process_tab, "进程信息")
         
-        # 状态信息
-        status_layout = QHBoxLayout()
-        self.status_label = QLabel("状态: 等待开始")
-        status_font = self.status_label.font()
-        status_font.setBold(True)
-        self.status_label.setFont(status_font)
-        status_layout.addWidget(self.status_label)
-        header_layout.addLayout(status_layout)
-        
-        main_layout.addWidget(header_group)
-        
-        # ======= 内容区域 =======
-        content_tabs = QTabWidget()
-        
-        # 参数组合标签页
-        params_tab = QWidget()
-        params_layout = QVBoxLayout(params_tab)
-        params_layout.setContentsMargins(15, 15, 15, 15)
+        # ======= 3. 执行情况标签页 =======
+        execution_tab = QWidget()
+        execution_layout = QVBoxLayout(execution_tab)
+        execution_layout.setContentsMargins(15, 15, 15, 15)
+        execution_layout.setSpacing(15)
         
         # 当前参数组合
         params_group = QGroupBox("当前处理的参数组合")
         params_grid = QGridLayout(params_group)
+        params_grid.setContentsMargins(15, 25, 15, 15)  # 增加内边距
+        params_grid.setVerticalSpacing(20)  # 增加垂直间距
         params_grid.setColumnStretch(0, 1)
-        params_grid.setColumnStretch(1, 2)
+        params_grid.setColumnStretch(1, 3)
         
         param_labels = [
             ("预测周期", "forward_period"),
@@ -598,56 +641,114 @@ class GridSearchUI(QMainWindow):
         for i, (label_text, param_name) in enumerate(param_labels):
             label = QLabel(f"{label_text}:")
             value_label = QLabel("-")
+            
+            # 设置更大的字体和最小高度
+            font = label.font()
+            font.setPointSize(11)  # 增加字体大小
+            label.setFont(font)
+            value_label.setFont(font)
+            
+            # 设置最小高度确保完整显示
+            label.setMinimumHeight(30)
+            value_label.setMinimumHeight(30)
+            
             params_grid.addWidget(label, i, 0)
             params_grid.addWidget(value_label, i, 1)
             self.param_value_labels[param_name] = value_label
             
-        params_layout.addWidget(params_group)
+        execution_layout.addWidget(params_group)
         
         # 日志输出
         log_group = QGroupBox("执行日志")
         log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(15, 25, 15, 15)
         
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        font = self.log_text.font()
+        font.setPointSize(10)  # 增加日志字体大小
+        self.log_text.setFont(font)
         log_layout.addWidget(self.log_text)
         
-        params_layout.addWidget(log_group)
-        content_tabs.addTab(params_tab, "执行情况")
+        execution_layout.addWidget(log_group)
         
-        # 结果标签页
+        main_tabs.addTab(execution_tab, "执行情况")
+        
+        # ======= 4. 因子结果标签页 =======
         results_tab = QWidget()
         results_layout = QVBoxLayout(results_tab)
         results_layout.setContentsMargins(15, 15, 15, 15)
+        results_layout.setSpacing(15)
         
         # 因子结果表格
+        results_group = QGroupBox("已找到的因子")
+        results_inner_layout = QVBoxLayout(results_group)
+        results_inner_layout.setContentsMargins(15, 25, 15, 15)
+        
         self.results_table = QTableWidget(0, 6)
         self.results_table.setHorizontalHeaderLabels([
             "预测周期", "表达式", "IC值", "稳定性", "做多收益", "做空收益"
         ])
-        self.results_table.horizontalHeader().setStretchLastSection(True)
+        
+        # 设置表格列宽和行高
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(0, header.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, header.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, header.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, header.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, header.ResizeMode.Fixed)
+        header.setSectionResizeMode(5, header.ResizeMode.Fixed)
         self.results_table.setColumnWidth(0, 100)
-        self.results_table.setColumnWidth(1, 350)
         self.results_table.setColumnWidth(2, 100)
         self.results_table.setColumnWidth(3, 100)
         self.results_table.setColumnWidth(4, 100)
         self.results_table.setColumnWidth(5, 100)
+        self.results_table.verticalHeader().setDefaultSectionSize(35)  # 增加行高
         
-        results_layout.addWidget(self.results_table)
-        content_tabs.addTab(results_tab, "已找到的因子")
+        results_inner_layout.addWidget(self.results_table)
+        results_layout.addWidget(results_group)
         
-        main_layout.addWidget(content_tabs)
+        main_tabs.addTab(results_tab, "已找到的因子")
+        
+        # ======= 5. K线图标签页 =======
+        kline_tab = QWidget()
+        kline_layout = QVBoxLayout(kline_tab)
+        kline_layout.setContentsMargins(15, 15, 15, 15)
+        kline_layout.setSpacing(0)
+        
+        # 添加K线图组件
+        self.kline_widget = KlineViewWidget()
+        kline_layout.addWidget(self.kline_widget)
+        
+        main_tabs.addTab(kline_tab, "K线图")
+        
+        # 添加主标签页到布局
+        main_layout.addWidget(main_tabs)
         
         # ======= 底部按钮区域 =======
         buttons_layout = QHBoxLayout()
         buttons_layout.setContentsMargins(0, 0, 0, 0)
-        buttons_layout.setSpacing(10)
+        buttons_layout.setSpacing(15)
         
         self.start_button = QPushButton("开始搜索")
         self.pause_button = QPushButton("暂停")
         self.stop_button = QPushButton("停止")
         self.report_button = QPushButton("打开报告")
+        
+        # 增大按钮尺寸
+        button_font = self.start_button.font()
+        button_font.setPointSize(11)
+        button_font.setBold(True)
+        self.start_button.setFont(button_font)
+        self.pause_button.setFont(button_font)
+        self.stop_button.setFont(button_font)
+        self.report_button.setFont(button_font)
+        
+        self.start_button.setMinimumHeight(40)
+        self.pause_button.setMinimumHeight(40)
+        self.stop_button.setMinimumHeight(40)
+        self.report_button.setMinimumHeight(40)
         
         self.start_button.clicked.connect(self.start_search)
         self.pause_button.clicked.connect(self.toggle_pause)
@@ -818,8 +919,15 @@ class GridSearchUI(QMainWindow):
                 memory_percent = process.memory_percent()
                 
                 # 更新表格中的资源使用情况
-                self.process_table.setItem(i, 1, QTableWidgetItem(f"{cpu_percent:.1f}%"))
-                self.process_table.setItem(i, 2, QTableWidgetItem(f"{memory_percent:.1f}%"))
+                cpu_item = QTableWidgetItem(f"{cpu_percent:.1f}%")
+                mem_item = QTableWidgetItem(f"{memory_percent:.1f}%")
+                
+                # 设置文本对齐
+                cpu_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                mem_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                
+                self.process_table.setItem(i, 1, cpu_item)
+                self.process_table.setItem(i, 2, mem_item)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 self.process_table.setItem(i, 1, QTableWidgetItem("N/A"))
                 self.process_table.setItem(i, 2, QTableWidgetItem("N/A"))
@@ -828,6 +936,11 @@ class GridSearchUI(QMainWindow):
         """更新进程信息显示"""
         self.process_info = {}
         self.process_table.setRowCount(len(process_ids))
+        
+        # 计算表格最小所需高度
+        min_height = 28 * (len(process_ids) + 1) + 2  # +1 for header, +2 for borders
+        min_height = max(min_height, 150)  # 至少150像素
+        self.process_table.setMinimumHeight(min_height)
         
         for i, pid in enumerate(process_ids):
             try:
@@ -840,9 +953,18 @@ class GridSearchUI(QMainWindow):
                     'memory': memory_percent
                 }
                 
-                self.process_table.setItem(i, 0, QTableWidgetItem(str(pid)))
-                self.process_table.setItem(i, 1, QTableWidgetItem(f"{cpu_percent:.1f}%"))
-                self.process_table.setItem(i, 2, QTableWidgetItem(f"{memory_percent:.1f}%"))
+                pid_item = QTableWidgetItem(str(pid))
+                cpu_item = QTableWidgetItem(f"{cpu_percent:.1f}%")
+                mem_item = QTableWidgetItem(f"{memory_percent:.1f}%")
+                
+                # 确保文本垂直居中
+                pid_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                cpu_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                mem_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                
+                self.process_table.setItem(i, 0, pid_item)
+                self.process_table.setItem(i, 1, cpu_item)
+                self.process_table.setItem(i, 2, mem_item)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 self.process_table.setItem(i, 0, QTableWidgetItem(str(pid)))
                 self.process_table.setItem(i, 1, QTableWidgetItem("N/A"))
@@ -942,9 +1064,15 @@ class GridSearchUI(QMainWindow):
         """更新参数显示"""
         for param_name, label in self.param_value_labels.items():
             if param_name in params:
-                label.setText(str(params[param_name]))
+                value_str = str(params[param_name])
+                label.setText(value_str)
+                
+                # 确保值完整显示
+                label.setMinimumWidth(label.fontMetrics().horizontalAdvance(value_str) + 20)
+                label.setToolTip(value_str)  # 添加工具提示，方便查看完整值
             else:
                 label.setText("-")
+                label.setToolTip("")
                 
     def add_factor_to_table(self, factor, params):
         """添加因子到结果表格"""
@@ -984,7 +1112,9 @@ class GridSearchUI(QMainWindow):
     def log_message(self, message):
         """添加日志消息"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {message}")
+        log_entry = f"[{timestamp}] {message}"
+        self.log_text.append(log_entry)
+        self.status_log_text.append(log_entry)  # 同时更新状态日志
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
