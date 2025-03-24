@@ -21,7 +21,8 @@ sys.path.insert(0, str(project_root))
 # 导入PyQt6
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QComboBox, QPushButton, QGroupBox, QSplitter, 
-                            QFrame, QGridLayout, QSizePolicy, QApplication)
+                            QFrame, QGridLayout, QSizePolicy, QApplication,
+                            QDialog, QCalendarWidget, QDialogButtonBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QDateTime, QPointF, QRectF
 from PyQt6.QtGui import QColor, QPen, QBrush, QPainter, QPicture
 
@@ -65,10 +66,11 @@ class TimeAxisItem(pg.AxisItem):
 
 # K线图自定义Item，用于绘制单个K线
 class CandlestickItem(pg.GraphicsObject):
-    def __init__(self, data):
+    def __init__(self, data, width=0.8):
         super(CandlestickItem, self).__init__()
         self.data = data  # 数据格式应为: [timestamp, open, high, low, close, volume]
         self.picture = None
+        self.width = width  # K线宽度
         self.generatePicture()
         
     def generatePicture(self):
@@ -77,7 +79,12 @@ class CandlestickItem(pg.GraphicsObject):
         painter = QPainter(self.picture)
         painter.setPen(pg.mkPen('w'))
         
-        width = 0.8  # K线宽度 (基础值)
+        # 使用固定宽度，确保K线紧挨着
+        # 不再根据时间间隔计算宽度，而是使用传入的固定宽度
+        width = self.width
+            
+        print(f"K线绘制宽度: {width}")
+        
         for (t, open, high, low, close, volume) in self.data:
             # 确定K线颜色 (上涨为绿色，下跌为红色)
             if close > open:
@@ -120,18 +127,16 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         self.setBackground('#1e1e1e')
         
         # K线显示相关设置
-        self.bar_width = 0.8     # K线宽度
-        self.min_bar_width = 0.3 # 最小K线宽度
-        self.max_bar_width = 1.5 # 最大K线宽度
+        self.bar_width = 0.9     # K线宽度（增大）
+        self.min_bar_width = 0.3 # 最小K线宽度（降低到0.3）
+        self.max_bar_width = 1.3 # 最大K线宽度（降低到1.3）
         
         # 时间轴导航参数
         self.time_offset = 0  # 时间偏移量，0表示最新数据
         
         # 数据存储
         self.current_data = None  # 当前显示的数据
-        self.full_data = None     # 完整数据集
         self.current_title = ""   # 当前标题
-        self.date_range = "1d"    # 当前显示的时间范围
         
         # 创建布局
         self.setup_plots()
@@ -144,23 +149,24 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 清除现有布局
         self.clear()
         
-        # 创建时间轴
-        time_axis = TimeAxisItem(orientation='bottom')
+        # 为价格图表和成交量图表分别创建独立的时间轴
+        price_time_axis = TimeAxisItem(orientation='bottom')
+        volume_time_axis = TimeAxisItem(orientation='bottom')
         
         # 创建主K线图表
-        self.price_plot = self.addPlot(row=0, col=0, axisItems={'bottom': time_axis})
+        self.price_plot = self.addPlot(row=0, col=0, axisItems={'bottom': price_time_axis})
         self.price_plot.showGrid(x=True, y=True, alpha=0.3)
         self.price_plot.setLabel('left', '价格')
         self.price_plot.setMinimumHeight(300)
         
         # 创建成交量图表
-        self.volume_plot = self.addPlot(row=1, col=0, axisItems={'bottom': time_axis})
+        self.volume_plot = self.addPlot(row=1, col=0, axisItems={'bottom': volume_time_axis})
         self.volume_plot.showGrid(x=True, y=True, alpha=0.3)
         self.volume_plot.setLabel('left', '成交量')
         self.volume_plot.setMaximumHeight(100)
         
-        # 连接X轴范围
-        self.price_plot.setXLink(self.volume_plot)
+        # 连接X轴范围，使两个图表的X轴同步
+        self.volume_plot.setXLink(self.price_plot)
         
         # 添加十字光标
         self.vLine = pg.InfiniteLine(angle=90, movable=False)
@@ -171,158 +177,196 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 添加鼠标移动事件处理
         self.proxy = pg.SignalProxy(self.price_plot.scene().sigMouseMoved, rateLimit=60, slot=self.mouseMoved)
         
-        # 添加鼠标滚轮事件处理
-        self.price_plot.scene().sigMouseWheel.connect(self.mouseWheelEvent)
+        # 移除错误的鼠标滚轮事件连接
+        # 现在我们使用wheelEvent方法重写来处理滚轮事件
+        
+    def setXRangeWithAnimation(self, min_x, max_x, duration=200):
+        """平滑动画设置X轴范围
+        
+        Args:
+            min_x: 新的最小X值
+            max_x: 新的最大X值
+            duration: 动画持续时间，毫秒
+        """
+        # 获取当前范围
+        current_range = self.price_plot.viewRange()[0]
+        
+        # 使用平滑动画过渡到新的范围
+        self.price_plot.setXRange(min_x, max_x, padding=0)
+
+    def wheelEvent(self, ev):
+        """重写wheelEvent方法处理滚轮事件，控制视图缩放而不是K线宽度"""
+        # 获取滚轮方向
+        delta = ev.angleDelta().y()
+        print(f"捕获到鼠标滚轮事件，delta={delta}")
+        
+        if self.current_data is None or len(self.current_data) == 0:
+            return
+            
+        # 获取当前视图范围
+        view_range = self.price_plot.viewRange()
+        x_range = view_range[0]
+        current_width = x_range[1] - x_range[0]
+        
+        # 获取鼠标位置作为缩放中心点
+        # 简化处理方式，直接使用当前视图的中心点作为缩放中心
+        center_x = (x_range[0] + x_range[1]) / 2
+        
+        # 计算新的视图宽度
+        if delta > 0:  # 向上滚动，放大视图（显示更少K线）
+            new_width = max(10, current_width * 0.8)  # 缩小到当前的80%，但至少显示10根K线
+            print(f"放大视图: {current_width:.1f} -> {new_width:.1f}")
+        else:  # 向下滚动，缩小视图（显示更多K线）
+            new_width = min(len(self.current_data), current_width * 1.25)  # 扩大到当前的125%
+            print(f"缩小视图: {current_width:.1f} -> {new_width:.1f}")
+        
+        # 计算新的视图范围
+        new_min = max(0, center_x - new_width / 2)
+        new_max = min(len(self.current_data) - 1, center_x + new_width / 2)
+        
+        # 如果范围超出数据边界，调整保持宽度
+        if new_min <= 0:
+            new_max = min(len(self.current_data) - 1, new_width)
+        if new_max >= len(self.current_data) - 1:
+            new_min = max(0, len(self.current_data) - 1 - new_width)
+        
+        # 设置新的视图范围（使用平滑动画）
+        self.setXRangeWithAnimation(new_min, new_max)
+        print(f"调整视图范围: {new_min:.1f} -> {new_max:.1f}, 显示{new_max-new_min:.1f}条K线")
+        
+        # 发出更新信号
+        self.kline_updated.emit()
+        
+        # 阻止事件传递给父类
+        ev.accept()
         
     def mouseMoved(self, evt):
         """鼠标移动事件处理，显示十字光标和数据提示"""
         pos = evt[0]  # 鼠标位置
         if self.price_plot.sceneBoundingRect().contains(pos):
             mouse_point = self.price_plot.vb.mapSceneToView(pos)
-            self.vLine.setPos(mouse_point.x())
-            self.hLine.setPos(mouse_point.y())
+            x = mouse_point.x()
+            y = mouse_point.y()
             
-    def mouseWheelEvent(self, ev):
-        """鼠标滚轮事件处理，缩放K线大小"""
-        delta = ev.delta()
-        print(f"捕获到PyQtGraph滚轮事件，delta={delta}")
-        
-        old_width = self.bar_width
-        
-        if delta > 0:  # 向上滚动，放大
-            self.bar_width = min(self.bar_width + 0.1, self.max_bar_width)
-            print(f"增大K线宽度为：{self.bar_width}")
-        else:  # 向下滚动，缩小
-            self.bar_width = max(self.bar_width - 0.1, self.min_bar_width)
-            print(f"减小K线宽度为：{self.bar_width}")
+            # 设置十字光标位置
+            self.vLine.setPos(x)
+            self.hLine.setPos(y)
             
-        # 如果宽度真的变化了才重绘
-        if abs(old_width - self.bar_width) > 0.01 and self.current_data is not None:
-            print("重新绘制K线图")
-            self.plot_kline(self.current_data, self.current_title)
-            # 发出更新信号
-            self.kline_updated.emit()
-        
+            # 尝试获取当前位置的K线数据，显示更详细的信息
+            if self.current_data is not None and len(self.current_data) > 0:
+                try:
+                    idx = int(round(x))
+                    if 0 <= idx < len(self.current_data):
+                        # 获取该位置的K线数据
+                        _, open_price, high, low, close, volume = self.current_data[idx]
+                        
+                        # 转换为时间显示
+                        time_stamp = self.index_to_ts.get(idx)
+                        if time_stamp:
+                            dt = datetime.fromtimestamp(time_stamp)
+                            time_str = dt.strftime('%Y-%m-%d %H:%M')
+                        else:
+                            time_str = "未知时间"
+                            
+                        # 创建提示信息
+                        tooltip = f"时间: {time_str}\n开盘: {open_price:.2f}\n最高: {high:.2f}\n最低: {low:.2f}\n收盘: {close:.2f}\n成交量: {volume:.2f}"
+                        
+                        # 这里可以添加一个浮动标签显示这些信息
+                        # 由于pyqtgraph本身不直接支持跟随鼠标的工具提示，这里只在控制台打印
+                        # print(tooltip)
+                except Exception as e:
+                    print(f"获取K线数据出错: {e}")
+                    
     def move_time_window(self, direction):
         """移动时间窗口，查看前后时间段的K线
         
         Args:
             direction: 移动方向，1表示向前（查看更早数据），-1表示向后（查看更新数据）
         """
-        if self.full_data is None or len(self.full_data) == 0:
+        if self.current_data is None or len(self.current_data) == 0:
             return
             
         # 更新时间偏移
         self.time_offset += direction
         
-        # 限制偏移范围，不超过数据集大小
-        max_offset = len(self.full_data) // 10  # 假设一个合理的最大偏移
-        self.time_offset = max(-max_offset, min(self.time_offset, 0))
+        # 获取当前视图范围
+        view_range = self.price_plot.viewRange()
+        x_range = view_range[0]
         
-        # 重新绘制数据
-        if self.time_offset == 0:
-            # 重置为默认范围（最新数据）
-            self.plot_kline_with_range(self.full_data, self.current_title, self.date_range)
-        else:
-            # 计算新的时间窗口并绘制
-            self._plot_with_offset()
+        # 计算移动的步数（显示宽度的一半）
+        step = int((x_range[1] - x_range[0]) / 2)
+        
+        # 限制范围不超出数据边界
+        data_length = len(self.current_data)
+        min_idx = max(0, int(x_range[0]) - step * direction)
+        max_idx = min(data_length - 1, int(x_range[1]) - step * direction)
+        
+        print(f"移动时间窗口: direction={direction}, time_offset={self.time_offset}")
+        print(f"当前视图范围: {x_range[0]:.1f} -> {x_range[1]:.1f}, step={step}")
+        print(f"数据长度: {data_length}, 移动前索引范围: {int(x_range[0])} -> {int(x_range[1])}")
+        print(f"新索引范围计算: min_idx = max(0, {int(x_range[0])} - {step} * {direction}) = {min_idx}")
+        print(f"新索引范围计算: max_idx = min({data_length-1}, {int(x_range[1])} - {step} * {direction}) = {max_idx}")
+        
+        # 检查是否到达数据边界
+        if direction > 0 and min_idx == 0:
+            print("已到达数据最早边界")
+            # 尝试扩大视图显示更多数据
+            max_idx = min(data_length - 1, max_idx + 5)
+        elif direction < 0 and max_idx == data_length - 1:
+            print("已到达数据最新边界")
+            # 尝试扩大视图显示更多数据
+            min_idx = max(0, min_idx - 5)
+        
+        # 确保至少显示一定数量的K线
+        if max_idx - min_idx < 10:
+            if direction > 0:  # 向前移动
+                max_idx = min(data_length - 1, min_idx + 10)
+            else:  # 向后移动
+                min_idx = max(0, max_idx - 10)
+        
+        # 打印当前区域的时间范围，帮助调试
+        if 0 <= min_idx < data_length and 0 <= max_idx < data_length:
+            start_time = datetime.fromtimestamp(self.current_data[min_idx][0])
+            end_time = datetime.fromtimestamp(self.current_data[max_idx][0])
+            print(f"移动到时间范围: {start_time} -> {end_time}, 索引范围: {min_idx} -> {max_idx}")
+        
+        # 当移动到边界附近时，更新Y轴范围（价格范围）
+        try:
+            # 获取当前可见区域的数据
+            visible_indices = range(min_idx, max_idx + 1)
+            data_np = np.array(self.current_data, dtype=float)
+            
+            if min_idx >= len(data_np) or max_idx >= len(data_np):
+                print(f"警告：索引超出范围！min_idx={min_idx}, max_idx={max_idx}, data_length={len(data_np)}")
+                # 修正索引范围
+                min_idx = min(min_idx, len(data_np) - 1)
+                max_idx = min(max_idx, len(data_np) - 1)
+                visible_indices = range(min_idx, max_idx + 1)
+            
+            # 获取可见区域内的最高价和最低价
+            visible_highs = data_np[visible_indices, 2]  # high
+            visible_lows = data_np[visible_indices, 3]   # low
+            
+            max_price = np.max(visible_highs)
+            min_price = np.min(visible_lows)
+            
+            # 计算价格范围，并添加边距
+            price_range = max_price - min_price
+            padding = price_range * 0.05
+            
+            # 设置价格轴范围
+            self.price_plot.setYRange(min_price - padding, max_price + padding)
+            print(f"更新价格范围: {min_price - padding:.2f} -> {max_price + padding:.2f}")
+        except Exception as e:
+            print(f"更新价格范围出错: {e}")
+        
+        # 设置新的显示范围（使用平滑动画）
+        self.setXRangeWithAnimation(min_idx - 0.5, max_idx + 1.5)
+        print(f"移动到索引: {min_idx} -> {max_idx}，显示{max_idx - min_idx + 1}条K线")
         
         # 发出更新信号
         self.kline_updated.emit()
         
-    def _plot_with_offset(self):
-        """根据时间偏移绘制数据"""
-        if self.full_data is None or len(self.full_data) == 0:
-            return
-            
-        data_df = pd.DataFrame(self.full_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        # 根据当前时间范围计算窗口大小
-        if self.date_range == "1d":
-            window_size = timedelta(days=1)
-            step_size = timedelta(hours=6)
-        elif self.date_range == "3d":
-            window_size = timedelta(days=3)
-            step_size = timedelta(days=1)
-        elif self.date_range == "1w":
-            window_size = timedelta(days=7)
-            step_size = timedelta(days=2)
-        elif self.date_range == "2w":
-            window_size = timedelta(days=14)
-            step_size = timedelta(days=3)
-        elif self.date_range == "1m":
-            window_size = timedelta(days=30)
-            step_size = timedelta(days=7)
-        elif self.date_range == "3m":
-            window_size = timedelta(days=90)
-            step_size = timedelta(days=14)
-        else:  # "all"
-            self.plot_kline(self.full_data, f"{self.current_title}")
-            return
-            
-        # 获取最新时间和偏移后的时间
-        latest_time = pd.to_datetime(data_df['timestamp']).max()
-        offset_time = latest_time + step_size * self.time_offset
-        start_time = offset_time - window_size
-        
-        # 过滤数据
-        mask = (pd.to_datetime(data_df['timestamp']) >= start_time) & \
-               (pd.to_datetime(data_df['timestamp']) <= offset_time)
-        filtered_data = data_df[mask].values.tolist()
-        
-        # 绘制过滤后的数据
-        if filtered_data:
-            title = f"{self.current_title} (偏移: {self.time_offset})"
-            self.plot_kline(filtered_data, title)
-    
-    def plot_kline_with_range(self, data, title="", date_range="1d"):
-        """根据时间范围绘制K线图
-        
-        Args:
-            data: 数据列表，每项为 [timestamp, open, high, low, close, volume]
-            title: 图表标题
-            date_range: 范围字符串("1d", "3d", "1w", "2w", "1m", "3m", "all")
-        """
-        # 存储完整数据和范围设置
-        self.full_data = data
-        self.date_range = date_range
-        self.time_offset = 0  # 重置时间偏移
-        
-        # 如果数据为空则返回
-        if not data or len(data) == 0:
-            return
-            
-        # 转换为DataFrame便于处理
-        data_df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        # 根据时间范围筛选数据
-        if date_range == "all":
-            filtered_data = data
-        else:
-            # 获取当前最新数据的时间
-            latest_time = pd.to_datetime(data_df['timestamp']).max()
-            
-            # 根据范围设置开始时间
-            if date_range == "1d":
-                start_time = latest_time - timedelta(days=1)
-            elif date_range == "3d":
-                start_time = latest_time - timedelta(days=3)
-            elif date_range == "1w":
-                start_time = latest_time - timedelta(days=7)
-            elif date_range == "2w":
-                start_time = latest_time - timedelta(days=14)
-            elif date_range == "1m":
-                start_time = latest_time - timedelta(days=30)
-            elif date_range == "3m":
-                start_time = latest_time - timedelta(days=90)
-            
-            # 过滤数据
-            mask = pd.to_datetime(data_df['timestamp']) >= start_time
-            filtered_data = data_df[mask].values.tolist()
-        
-        # 绘制过滤后的数据
-        self.plot_kline(filtered_data, title)
-    
     def plot_kline(self, data, title=""):
         """绘制K线图
         
@@ -330,6 +374,9 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             data: 数据列表，每项为 [timestamp, open, high, low, close, volume]
             title: 图表标题
         """
+        print(f"\n===== 开始绘制K线图 =====")
+        print(f"数据长度：{len(data)} 条K线")
+        
         # 存储当前数据用于后续操作
         self.current_data = data
         self.current_title = title
@@ -344,34 +391,247 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         
         # 如果数据为空则返回
         if not data or len(data) == 0:
+            print("没有数据可供绘制")
             return
+        
+        # 打印数据时间范围
+        start_time = datetime.fromtimestamp(data[0][0])
+        end_time = datetime.fromtimestamp(data[-1][0])
+        print(f"K线时间范围：{start_time} 到 {end_time}")
+        print(f"总共 {len(data)} 条K线，覆盖 {(end_time - start_time).days} 天")
         
         # 设置标题
         self.price_plot.setTitle(title, color='#ffffff', size='12pt')
         
         # 准备处理数据
         data_np = np.array(data, dtype=float)
-        timestamps = data_np[:, 0].astype(np.int64)
+        timestamps = data_np[:, 0].astype(np.int64)  # 实际时间戳，用于X轴标签
         opens = data_np[:, 1]
         highs = data_np[:, 2]
         lows = data_np[:, 3]
         closes = data_np[:, 4]
         volumes = data_np[:, 5]
         
-        # 创建K线图项
-        candlestick = CandlestickItem(data_np)
-        self.price_plot.addItem(candlestick)
+        # 创建索引位置数组，用于绘制K线
+        # 这样K线会紧挨着，不会有间隔
+        indices = np.arange(len(timestamps))
         
-        # 创建成交量柱状图
-        volume_brush = np.where(closes > opens, '#26a69a', '#ef5350')
-        volume_brush = [pg.mkBrush(color) for color in volume_brush]
-        volume_bar = pg.BarGraphItem(x=timestamps, height=volumes * 0.4, width=self.bar_width, brush=volume_brush)
-        self.volume_plot.addItem(volume_bar)
+        # 创建时间戳到索引的映射，用于数据显示和查询
+        self.ts_to_index = dict(zip(timestamps, indices))
+        self.index_to_ts = dict(zip(indices, timestamps))
         
-        # 自动调整视图范围
-        self.price_plot.autoRange()
-        self.volume_plot.autoRange()
+        # 输出某些特定时间的索引，用于调试
+        debug_times = [
+            "2023-03-08 13:40:00",
+            "2023-03-09 07:15:00",  # 用户报告这个时间点以前的数据无法显示
+            "2023-03-10 05:40:00"
+        ]
+        print("时间索引映射（调试）:")
+        for time_str in debug_times:
+            try:
+                dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                ts = dt.timestamp()
+                closest_ts = min(timestamps, key=lambda x: abs(x - ts))
+                closest_idx = self.ts_to_index[closest_ts]
+                closest_time = datetime.fromtimestamp(closest_ts)
+                print(f"  - {time_str} -> 最接近的索引: {closest_idx}, 对应时间: {closest_time}")
+            except Exception as e:
+                print(f"  - {time_str} -> 查找失败: {e}")
+        
+        # 生成新的K线数据 - 使用索引位置替代时间戳
+        indexed_data = np.column_stack((indices, opens, highs, lows, closes, volumes))
+        
+        # 创建K线图项 - 使用索引位置绘制
+        # 加载所有K线数据，而不仅仅是当前视图的数据（预加载）
+        try:
+            print(f"生成K线图元素，K线宽度：{self.bar_width}")
+            candlestick = CandlestickItem(indexed_data, self.bar_width)
+            self.price_plot.addItem(candlestick)
+            print("K线图元素添加成功")
+        except Exception as e:
+            print(f"生成K线图元素失败: {e}")
+        
+        # 创建成交量柱状图 - 分别绘制上涨和下跌的成交量
+        up_idx = closes > opens
+        down_idx = ~up_idx
+        
+        # 上涨成交量 (绿色)
+        if np.any(up_idx):
+            try:
+                up_volume_bar = pg.BarGraphItem(
+                    x=indices[up_idx], 
+                    height=volumes[up_idx] * 0.4, 
+                    width=self.bar_width, 
+                    brush='#26a69a'  # 绿色
+                )
+                self.volume_plot.addItem(up_volume_bar)
+                print(f"添加上涨成交量柱状图，共{np.sum(up_idx)}条")
+            except Exception as e:
+                print(f"添加上涨成交量失败: {e}")
+        
+        # 下跌成交量 (红色)
+        if np.any(down_idx):
+            try:
+                down_volume_bar = pg.BarGraphItem(
+                    x=indices[down_idx], 
+                    height=volumes[down_idx] * 0.4, 
+                    width=self.bar_width, 
+                    brush='#ef5350'  # 红色
+                )
+                self.volume_plot.addItem(down_volume_bar)
+                print(f"添加下跌成交量柱状图，共{np.sum(down_idx)}条")
+            except Exception as e:
+                print(f"添加下跌成交量失败: {e}")
+        
+        # 创建自定义X轴刻度
+        def tickStrings(values, scale, spacing):
+            """将索引位置转换回时间显示"""
+            strings = []
+            for value in values:
+                try:
+                    # 找到最接近的索引
+                    idx = int(round(value))
+                    if idx >= 0 and idx < len(timestamps):
+                        # 转换回时间显示
+                        dt = datetime.fromtimestamp(timestamps[idx])
+                        strings.append(dt.strftime('%m-%d %H:%M'))
+                    else:
+                        strings.append('')
+                except:
+                    strings.append('')
+            return strings
+        
+        # 修改价格图和成交量图的X轴刻度函数
+        self.price_plot.getAxis('bottom').tickStrings = tickStrings
+        self.volume_plot.getAxis('bottom').tickStrings = tickStrings
+        
+        # 默认显示最后N根K线（初始视图范围）
+        display_count = min(30, len(indices))
+        print(f"初始显示最后 {display_count} 根K线")
+        
+        # 计算当前显示区域内的价格范围
+        visible_indices = indices[-display_count:]
+        
+        # 确保索引范围有效
+        if len(visible_indices) > 0:
+            visible_highs = highs[-display_count:]
+            visible_lows = lows[-display_count:]
+            
+            # 获取可见区域内的最高价和最低价
+            max_price = np.max(visible_highs)
+            min_price = np.min(visible_lows)
+            
+            # 计算价格范围，并添加一定的上下边距（5%，减小边距让K线更高）
+            price_range = max_price - min_price
+            padding = price_range * 0.05
+            
+            # 设置价格轴范围，稍微放大一些使K线看起来更高
+            self.price_plot.setYRange(min_price - padding, max_price + padding)
+            print(f"优化价格范围: {min_price - padding:.2f} -> {max_price + padding:.2f}")
+        
+        # 计算初始显示范围 - 使用索引
+        min_x = indices[-display_count] - 0.5  # 稍微留出左侧空间
+        max_x = indices[-1] + 1.5  # 稍微留出右侧空间
+        
+        # 设置初始显示范围
+        self.price_plot.setXRange(min_x, max_x)
+        print(f"初始显示范围: 索引 {min_x:.1f} -> {max_x:.1f}")
+        print(f"显示 {display_count} 条K线，总计加载 {len(indices)} 条K线")
+        print("K线图绘制完成")
 
+    def keyPressEvent(self, event):
+        """处理键盘事件，支持快捷键控制K线图
+        
+        + / = 键增加显示的K线数量
+        - 键减少显示的K线数量
+        Left 键向前导航
+        Right 键向后导航
+        Home 键重置到默认视图
+        """
+        key = event.key()
+        
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):  # + 或 = 键扩大显示范围
+            self.zoom_out_view()
+        elif key == Qt.Key.Key_Minus:  # - 键缩小显示范围
+            self.zoom_in_view()
+        elif key == Qt.Key.Key_Left:  # Left键向前导航
+            self.move_time_window(1)
+        elif key == Qt.Key.Key_Right:  # Right键向后导航
+            self.move_time_window(-1)
+        elif key == Qt.Key.Key_Home:  # Home键重置视图
+            self.reset_view()
+        else:
+            super().keyPressEvent(event)
+    
+    def zoom_in_view(self):
+        """缩小视图范围，显示更少的K线"""
+        if self.current_data is None or len(self.current_data) == 0:
+            return
+            
+        # 获取当前视图范围
+        view_range = self.price_plot.viewRange()
+        x_range = view_range[0]
+        current_width = x_range[1] - x_range[0]
+        
+        # 缩小显示范围为当前的75%
+        new_width = max(10, current_width * 0.75)  # 至少显示10根K线
+        center = (x_range[0] + x_range[1]) / 2
+        new_min = max(0, center - new_width / 2)
+        new_max = min(len(self.current_data) - 1, center + new_width / 2)
+        
+        self.price_plot.setXRange(new_min, new_max)
+        print(f"缩小显示范围: {new_min:.1f} -> {new_max:.1f}")
+        
+        # 发出更新信号
+        self.kline_updated.emit()
+    
+    def zoom_out_view(self):
+        """扩大视图范围，显示更多的K线"""
+        if self.current_data is None or len(self.current_data) == 0:
+            return
+            
+        # 获取当前视图范围
+        view_range = self.price_plot.viewRange()
+        x_range = view_range[0]
+        current_width = x_range[1] - x_range[0]
+        
+        # 扩大显示范围为当前的150%
+        new_width = min(len(self.current_data), current_width * 1.5)
+        center = (x_range[0] + x_range[1]) / 2
+        new_min = max(0, center - new_width / 2)
+        new_max = min(len(self.current_data) - 1, center + new_width / 2)
+        
+        self.price_plot.setXRange(new_min, new_max)
+        print(f"扩大显示范围: {new_min:.1f} -> {new_max:.1f}")
+        
+        # 发出更新信号
+        self.kline_updated.emit()
+    
+    def reset_view(self):
+        """重置视图到默认状态（显示最后N根K线）"""
+        if self.current_data is None or len(self.current_data) == 0:
+            return
+            
+        # 重置时间偏移
+        self.time_offset = 0
+        
+        # 显示最后30根K线（与plot_kline方法一致）
+        display_count = 30
+        data_length = len(self.current_data)
+        
+        # 限制显示数量不超过数据总量
+        display_count = min(display_count, data_length)
+        
+        # 计算显示范围 - 使用索引
+        min_x = data_length - display_count - 0.5  # 稍微留出左侧空间
+        max_x = data_length - 1 + 1.5  # 稍微留出右侧空间
+        
+        # 设置显示范围
+        self.price_plot.setXRange(min_x, max_x)
+        print(f"重置视图范围: {min_x:.1f} -> {max_x:.1f}")
+        
+        # 发出更新信号
+        self.kline_updated.emit()
 
 class KlineViewWidget(QWidget):
     """K线图显示组件"""
@@ -381,7 +641,6 @@ class KlineViewWidget(QWidget):
         self.loaded_data = {}  # 存储已加载的不同币种和时间周期的数据
         self.current_symbol = SYMBOL_CONFIG["main_symbol"]
         self.current_interval = "5m"  # 默认5分钟K线
-        self.current_date_range = "1d"  # 默认显示1天数据
         
         self.init_ui()
     
@@ -412,11 +671,9 @@ class KlineViewWidget(QWidget):
         self.interval_combo.setCurrentText(INTERVAL_DISPLAY["5m"])
         self.interval_combo.currentIndexChanged.connect(self.on_interval_changed)
         
-        # 时间范围选择
-        range_label = QLabel("时间范围:")
-        self.range_combo = QComboBox()
-        self.range_combo.addItems(["1天", "3天", "1周", "2周", "1个月", "3个月", "全部"])
-        self.range_combo.currentIndexChanged.connect(self.on_range_changed)
+        # 日期选择按钮
+        self.date_button = QPushButton("跳转到日期")
+        self.date_button.clicked.connect(self.on_jump_to_date)
         
         # 刷新按钮
         self.refresh_button = QPushButton("刷新数据")
@@ -427,9 +684,8 @@ class KlineViewWidget(QWidget):
         control_layout.addWidget(self.symbol_combo, 0, 1)
         control_layout.addWidget(interval_label, 0, 2)
         control_layout.addWidget(self.interval_combo, 0, 3)
-        control_layout.addWidget(range_label, 0, 4)
-        control_layout.addWidget(self.range_combo, 0, 5)
-        control_layout.addWidget(self.refresh_button, 0, 6)
+        control_layout.addWidget(self.date_button, 0, 4)
+        control_layout.addWidget(self.refresh_button, 0, 5)
         
         # ===== 时间导航控制面板 =====
         nav_layout = QHBoxLayout()
@@ -478,13 +734,18 @@ class KlineViewWidget(QWidget):
             self.price_labels[label_name] = label
             
         # 添加K线宽度显示
-        self.width_label = QLabel("K线宽度: 0.8")
+        self.width_label = QLabel("K线缩放: 正常")
         info_layout.addWidget(self.width_label)
         
         # 添加滚轮提示
-        scroll_tip = QLabel("提示: 使用鼠标滚轮调整K线宽度")
+        scroll_tip = QLabel("提示: 使用鼠标滚轮放大/缩小K线视图")
         scroll_tip.setStyleSheet("color: #2196F3;")
         info_layout.addWidget(scroll_tip)
+        
+        # 添加键盘快捷键提示
+        keys_tip = QLabel("快捷键: +/- 缩放视图 | ← → 导航 | Home 重置")
+        keys_tip.setStyleSheet("color: #2196F3;")
+        info_layout.addWidget(keys_tip)
         
         # 添加到主布局
         main_layout.addWidget(control_group)
@@ -501,13 +762,27 @@ class KlineViewWidget(QWidget):
         self.update_position_label()
     
     def on_prev_time_clicked(self):
-        """查看前一时间段"""
-        self.kline_view.move_time_window(1)  # 向前移动
-    
+        """查看前一时间段（更早的数据）"""
+        # 增加向前移动的距离
+        if hasattr(self.kline_view, 'price_plot'):
+            # 获取当前视图范围
+            view_range = self.kline_view.price_plot.viewRange()
+            x_range = view_range[0]
+            view_width = x_range[1] - x_range[0]
+            
+            # 确定移动的距离（当前视图宽度的一半）
+            move_step = int(view_width / 2)
+            
+            print(f"向前查看历史数据，移动步数: {move_step}")
+            
+            # 向前移动视图（更早的数据）
+            self.kline_view.move_time_window(1)
+
     def on_next_time_clicked(self):
-        """查看后一时间段"""
-        self.kline_view.move_time_window(-1)  # 向后移动
-    
+        """查看后一时间段（更新的数据）"""
+        # 向后移动视图（更新的数据）
+        self.kline_view.move_time_window(-1)
+
     def on_reset_time_clicked(self):
         """重置到最新数据"""
         if self.kline_view.time_offset != 0:
@@ -535,16 +810,30 @@ class KlineViewWidget(QWidget):
         # 检查是否已经加载过
         key = f"{symbol}_{interval}"
         if key in self.loaded_data:
+            print(f"使用缓存数据: {key}, 数据长度: {len(self.loaded_data[key])}")
             return self.loaded_data[key]
             
         # 加载数据
         data_pattern = f"data/kline/{symbol}_{interval}_*.csv"
+        print(f"加载K线数据: {data_pattern}")
+        
+        # 列出匹配的文件
+        import glob
+        matching_files = glob.glob(data_pattern)
+        print(f"找到 {len(matching_files)} 个匹配的数据文件:")
+        for file in matching_files:
+            print(f"  - {file}")
+        
+        # 加载数据文件
         df = load_data_files(data_pattern)
         
         # 如果数据为空，则返回空列表
         if df.empty:
             print(f"未找到数据: {data_pattern}")
             return []
+        
+        print(f"原始数据：{len(df)} 条记录")
+        print(f"时间范围: {df['timestamp'].min()} - {df['timestamp'].max()}")
         
         # 转换为列表格式，并将timestamp转换为Unix时间戳
         data_list = []
@@ -559,6 +848,37 @@ class KlineViewWidget(QWidget):
                 row['volume']
             ])
             
+        # 确保数据是按时间排序的
+        data_list.sort(key=lambda x: x[0])
+        
+        # 打印时间范围信息
+        if data_list:
+            start_time = datetime.fromtimestamp(data_list[0][0])
+            end_time = datetime.fromtimestamp(data_list[-1][0])
+            duration = end_time - start_time
+            days = duration.days
+            hours = duration.seconds // 3600
+            print(f"成功加载 {len(data_list)} 条K线数据")
+            print(f"时间范围：{start_time} - {end_time} (共 {days} 天 {hours} 小时)")
+            
+            # 打印时间分布统计
+            if len(data_list) > 0:
+                # 将数据按天分组
+                from collections import defaultdict
+                daily_counts = defaultdict(int)
+                for item in data_list:
+                    day = datetime.fromtimestamp(item[0]).strftime('%Y-%m-%d')
+                    daily_counts[day] += 1
+                
+                print(f"数据按天分布统计 (前10天):")
+                for i, (day, count) in enumerate(sorted(daily_counts.items())[:10]):
+                    print(f"  - {day}: {count} 条K线")
+                
+                if len(daily_counts) > 10:
+                    print(f"  ... 还有 {len(daily_counts) - 10} 天数据 ...")
+        else:
+            print("加载的数据列表为空")
+            
         # 缓存数据
         self.loaded_data[key] = data_list
         return data_list
@@ -568,23 +888,22 @@ class KlineViewWidget(QWidget):
         # 获取当前选择
         symbol = self.current_symbol
         interval = self.current_interval
-        date_range_mapping = {
-            0: "1d", 1: "3d", 2: "1w", 3: "2w", 
-            4: "1m", 5: "3m", 6: "all"
-        }
-        date_range = date_range_mapping[self.range_combo.currentIndex()]
         
         # 加载数据
+        print(f"\n===== 加载K线数据 {symbol} {interval} =====")
         data = self.load_data(symbol, interval)
         if not data:
             self.update_price_info(None)
+            print("没有数据可供显示")
             return
-            
-        # 设置图表标题
-        title = f"{symbol} {INTERVAL_DISPLAY.get(interval, interval)}"
         
-        # 使用新的带范围绘制方法
-        self.kline_view.plot_kline_with_range(data, title, date_range)
+        print(f"加载完成，数据长度: {len(data)} 条K线")
+        
+        # 设置图表标题
+        title = f"{symbol} {INTERVAL_DISPLAY.get(interval, interval)} - 全部历史数据"
+        
+        # 始终使用全量数据进行绘制
+        self.kline_view.plot_kline(data, title)
         
         # 如果有数据，更新最新价格信息
         latest_data = data[-1]  # 假设数据是按时间排序的
@@ -627,11 +946,124 @@ class KlineViewWidget(QWidget):
         self.current_interval = self.interval_combo.currentData()
         self.load_and_plot_data()
     
-    def on_range_changed(self, index):
-        """时间范围变化处理"""
-        self.load_and_plot_data()
-    
+    def on_jump_to_date(self):
+        """跳转到特定日期的K线"""
+        # 创建日期选择对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择日期")
+        layout = QVBoxLayout(dialog)
+        
+        # 创建日历控件
+        calendar = QCalendarWidget()
+        calendar.setGridVisible(True)
+        
+        # 设置日期范围
+        data_for_range = self.kline_view.current_data
+        
+        if data_for_range:
+            # 设置最早和最晚日期
+            first_ts = data_for_range[0][0]
+            last_ts = data_for_range[-1][0]
+            
+            first_date = QDateTime.fromSecsSinceEpoch(int(first_ts)).date()
+            last_date = QDateTime.fromSecsSinceEpoch(int(last_ts)).date()
+            
+            print(f"设置日期选择器范围: {first_date.toString('yyyy-MM-dd')} 到 {last_date.toString('yyyy-MM-dd')}")
+            
+            calendar.setDateRange(first_date, last_date)
+            calendar.setSelectedDate(last_date)  # 默认选择最新日期
+        
+        layout.addWidget(calendar)
+        
+        # 添加按钮
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_date = calendar.selectedDate()
+            print(f"用户选择了日期: {selected_date.toString('yyyy-MM-dd')}")
+            self.jump_to_date(selected_date)
+
+    def jump_to_date(self, qt_date):
+        """跳转到特定日期的K线
+        
+        Args:
+            qt_date: PyQt6日期对象
+        """
+        # 首先确保有数据可供查看
+        if not self.kline_view.current_data:
+            print("没有可用数据进行跳转")
+            return
+        
+        # 使用current_data
+        target_data = self.kline_view.current_data
+        
+        # 将Qt日期转换为Python日期
+        selected_date = qt_date.toPyDate()
+        
+        # 将日期转换为datetime，设定为当天开始时间
+        target_dt = datetime.combine(selected_date, datetime.min.time())
+        target_ts = target_dt.timestamp()
+        
+        print(f"跳转到日期: {selected_date} (时间戳: {target_ts})")
+        
+        # 获取时间戳列表
+        timestamps = [item[0] for item in target_data]
+        
+        # 寻找最接近的时间戳
+        closest_idx = min(range(len(timestamps)), key=lambda i: abs(timestamps[i] - target_ts))
+        closest_time = datetime.fromtimestamp(timestamps[closest_idx])
+        
+        print(f"找到最接近的K线索引: {closest_idx} / {len(timestamps)-1}")
+        print(f"对应时间: {closest_time}")
+        
+        # 计算显示范围
+        data_length = len(target_data)
+        display_count = 30
+        
+        # 确保索引不超出范围
+        start_idx = max(0, closest_idx - display_count // 4)  # 选择的日期左侧显示一些K线
+        end_idx = min(data_length - 1, start_idx + display_count - 1)
+        
+        # 如果接近数据末尾，调整起始位置
+        if end_idx >= data_length - 5:
+            start_idx = max(0, data_length - display_count)
+            end_idx = data_length - 1
+        
+        # 设置显示范围
+        self.kline_view.price_plot.setXRange(start_idx - 0.5, end_idx + 1.5)
+        
+        # 更新时间偏移
+        if closest_idx < data_length - 1:
+            self.kline_view.time_offset = data_length - 1 - closest_idx
+        else:
+            self.kline_view.time_offset = 0
+        
+        print(f"设置显示范围: {start_idx} -> {end_idx}，时间偏移: {self.kline_view.time_offset}")
+        
+        # 更新信息显示
+        self.update_position_label()
+        
+        # 刷新视图
+        self.kline_view.kline_updated.emit()
+
     def update_width_label(self):
         """更新K线宽度标签"""
         if hasattr(self, 'kline_view') and hasattr(self, 'width_label'):
-            self.width_label.setText(f"K线宽度: {self.kline_view.bar_width:.1f}")
+            # 获取当前视图范围
+            view_range = self.kline_view.price_plot.viewRange()
+            x_range = view_range[0]
+            view_width = x_range[1] - x_range[0]
+            
+            # 根据显示K线数量更新缩放状态
+            if view_width < 20:
+                zoom_state = "放大"
+            elif view_width > 50:
+                zoom_state = "缩小"
+            else:
+                zoom_state = "正常"
+                
+            self.width_label.setText(f"K线缩放: {zoom_state} ({view_width:.0f}根)")
