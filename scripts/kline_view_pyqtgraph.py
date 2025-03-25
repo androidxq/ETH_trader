@@ -276,7 +276,7 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
                         # print(tooltip)
                 except Exception as e:
                     print(f"获取K线数据出错: {e}")
-                    
+            
     def move_time_window(self, direction):
         """移动时间窗口，查看前后时间段的K线
         
@@ -366,7 +366,7 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         
         # 发出更新信号
         self.kline_updated.emit()
-        
+    
     def plot_kline(self, data, title=""):
         """绘制K线图
         
@@ -777,12 +777,12 @@ class KlineViewWidget(QWidget):
             
             # 向前移动视图（更早的数据）
             self.kline_view.move_time_window(1)
-
+    
     def on_next_time_clicked(self):
         """查看后一时间段（更新的数据）"""
         # 向后移动视图（更新的数据）
         self.kline_view.move_time_window(-1)
-
+    
     def on_reset_time_clicked(self):
         """重置到最新数据"""
         if self.kline_view.time_offset != 0:
@@ -896,9 +896,9 @@ class KlineViewWidget(QWidget):
             self.update_price_info(None)
             print("没有数据可供显示")
             return
-        
+            
         print(f"加载完成，数据长度: {len(data)} 条K线")
-        
+            
         # 设置图表标题
         title = f"{symbol} {INTERVAL_DISPLAY.get(interval, interval)} - 全部历史数据"
         
@@ -1049,7 +1049,7 @@ class KlineViewWidget(QWidget):
         
         # 刷新视图
         self.kline_view.kline_updated.emit()
-
+    
     def update_width_label(self):
         """更新K线宽度标签"""
         if hasattr(self, 'kline_view') and hasattr(self, 'width_label'):

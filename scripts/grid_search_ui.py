@@ -30,8 +30,6 @@ from PyQt6.QtGui import QFont, QIcon, QColor, QPalette
 # 导入项目模块
 from scripts.grid_search_factors import FactorGridSearch
 from factor_research.config.grid_search_config import PARAM_GRID, SPECIAL_COMBINATIONS, FIXED_PARAMS
-from scripts.kline_view import KlineViewWidget
-
 
 # 定义可以被pickle的函数（移到类外部）
 def wrapped_single_search(self, params, data):
@@ -711,18 +709,6 @@ class GridSearchUI(QMainWindow):
         
         main_tabs.addTab(results_tab, "已找到的因子")
         
-        # ======= 5. K线图标签页 =======
-        kline_tab = QWidget()
-        kline_layout = QVBoxLayout(kline_tab)
-        kline_layout.setContentsMargins(15, 15, 15, 15)
-        kline_layout.setSpacing(0)
-        
-        # 添加K线图组件
-        self.kline_widget = KlineViewWidget()
-        kline_layout.addWidget(self.kline_widget)
-        
-        main_tabs.addTab(kline_tab, "K线图")
-        
         # 添加主标签页到布局
         main_layout.addWidget(main_tabs)
         
@@ -767,9 +753,15 @@ class GridSearchUI(QMainWindow):
         
         main_layout.addLayout(buttons_layout)
         
+        # 设置标签页参数
+        main_tabs.setCurrentIndex(0)  # 默认显示状态页
+        
         # 显示窗口
         self.center_window()
         self.show()
+        
+        # 记录日志
+        self.log_message("系统已启动，等待开始网格搜索...")
         
     def center_window(self):
         """将窗口居中显示"""
