@@ -135,14 +135,22 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         self.time_offset = 0  # 时间偏移量，0表示最新数据
         
         # 数据存储
+        self.full_data = None    # 完整数据
         self.current_data = None  # 当前显示的数据
         self.current_title = ""   # 当前标题
+        
+        # 视图范围控制
+        self.max_display_count = 1000  # 最大显示K线数量
+        self.load_threshold = 0.2      # 触发加载新数据的阈值
         
         # 创建布局
         self.setup_plots()
         
         # 启用抗锯齿
         self.setAntialiasing(True)
+        
+        # 添加视图范围变化监听
+        self.price_plot.sigRangeChanged.connect(self.on_view_range_changed)
         
     def setup_plots(self):
         """初始化图表布局"""
@@ -194,11 +202,38 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 使用平滑动画过渡到新的范围
         self.price_plot.setXRange(min_x, max_x, padding=0)
 
+    def on_view_range_changed(self, view_box):
+        """处理视图范围变化事件，动态加载和释放数据"""
+        if self.full_data is None or len(self.full_data) == 0:
+            return
+            
+        # 获取当前视图范围
+        x_range = self.price_plot.viewRange()[0]
+        current_width = x_range[1] - x_range[0]
+        
+        # 计算需要显示的数据范围
+        start_idx = max(0, int(x_range[0] - current_width * self.load_threshold))
+        end_idx = min(len(self.full_data) - 1, int(x_range[1] + current_width * self.load_threshold))
+        
+        # 如果当前显示的数据范围发生变化，重新加载数据
+        if self.current_data is None or \
+           start_idx < self.full_data.index(self.current_data[0]) or \
+           end_idx > self.full_data.index(self.current_data[-1]):
+            
+            # 加载新的数据段
+            display_count = min(self.max_display_count, end_idx - start_idx + 1)
+            self.current_data = self.full_data[start_idx:start_idx + display_count]
+            
+            # 重新绘制K线图
+            self.plot_kline(self.current_data, self.current_title)
+            
+            print(f"视图范围变化，加载新数据段: {start_idx} -> {start_idx + display_count}")
+            print(f"当前显示 {len(self.current_data)} 条K线，总数据 {len(self.full_data)} 条")
+    
     def wheelEvent(self, ev):
-        """重写wheelEvent方法处理滚轮事件，控制视图缩放而不是K线宽度"""
+        """重写wheelEvent方法处理滚轮事件，控制视图缩放"""
         # 获取滚轮方向
         delta = ev.angleDelta().y()
-        print(f"捕获到鼠标滚轮事件，delta={delta}")
         
         if self.current_data is None or len(self.current_data) == 0:
             return
@@ -209,33 +244,20 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         current_width = x_range[1] - x_range[0]
         
         # 获取鼠标位置作为缩放中心点
-        # 简化处理方式，直接使用当前视图的中心点作为缩放中心
         center_x = (x_range[0] + x_range[1]) / 2
         
         # 计算新的视图宽度
-        if delta > 0:  # 向上滚动，放大视图（显示更少K线）
-            new_width = max(10, current_width * 0.8)  # 缩小到当前的80%，但至少显示10根K线
-            print(f"放大视图: {current_width:.1f} -> {new_width:.1f}")
-        else:  # 向下滚动，缩小视图（显示更多K线）
-            new_width = min(len(self.current_data), current_width * 1.25)  # 扩大到当前的125%
-            print(f"缩小视图: {current_width:.1f} -> {new_width:.1f}")
+        if delta > 0:  # 向上滚动，放大视图
+            new_width = max(10, current_width * 0.8)
+        else:  # 向下滚动，缩小视图
+            new_width = min(self.max_display_count, current_width * 1.25)
         
         # 计算新的视图范围
         new_min = max(0, center_x - new_width / 2)
         new_max = min(len(self.current_data) - 1, center_x + new_width / 2)
         
-        # 如果范围超出数据边界，调整保持宽度
-        if new_min <= 0:
-            new_max = min(len(self.current_data) - 1, new_width)
-        if new_max >= len(self.current_data) - 1:
-            new_min = max(0, len(self.current_data) - 1 - new_width)
-        
         # 设置新的视图范围（使用平滑动画）
         self.setXRangeWithAnimation(new_min, new_max)
-        print(f"调整视图范围: {new_min:.1f} -> {new_max:.1f}, 显示{new_max-new_min:.1f}条K线")
-        
-        # 发出更新信号
-        self.kline_updated.emit()
         
         # 阻止事件传递给父类
         ev.accept()
@@ -278,12 +300,12 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
                     print(f"获取K线数据出错: {e}")
             
     def move_time_window(self, direction):
-        """移动时间窗口，查看前后时间段的K线
+        """移动时间窗口，查看前后时间段的K线，支持动态加载数据
         
         Args:
             direction: 移动方向，1表示向前（查看更早数据），-1表示向后（查看更新数据）
         """
-        if self.current_data is None or len(self.current_data) == 0:
+        if self.full_data is None or len(self.full_data) == 0:
             return
             
         # 更新时间偏移
@@ -296,59 +318,37 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 计算移动的步数（显示宽度的一半）
         step = int((x_range[1] - x_range[0]) / 2)
         
-        # 限制范围不超出数据边界
-        data_length = len(self.current_data)
-        min_idx = max(0, int(x_range[0]) - step * direction)
-        max_idx = min(data_length - 1, int(x_range[1]) - step * direction)
+        # 获取当前数据在完整数据中的位置
+        current_start_idx = self.full_data.index(self.current_data[0]) if self.current_data else 0
+        current_end_idx = current_start_idx + len(self.current_data) - 1
         
-        print(f"移动时间窗口: direction={direction}, time_offset={self.time_offset}")
-        print(f"当前视图范围: {x_range[0]:.1f} -> {x_range[1]:.1f}, step={step}")
-        print(f"数据长度: {data_length}, 移动前索引范围: {int(x_range[0])} -> {int(x_range[1])}")
-        print(f"新索引范围计算: min_idx = max(0, {int(x_range[0])} - {step} * {direction}) = {min_idx}")
-        print(f"新索引范围计算: max_idx = min({data_length-1}, {int(x_range[1])} - {step} * {direction}) = {max_idx}")
-        
-        # 检查是否到达数据边界
-        if direction > 0 and min_idx == 0:
-            print("已到达数据最早边界")
-            # 尝试扩大视图显示更多数据
-            max_idx = min(data_length - 1, max_idx + 5)
-        elif direction < 0 and max_idx == data_length - 1:
-            print("已到达数据最新边界")
-            # 尝试扩大视图显示更多数据
-            min_idx = max(0, min_idx - 5)
+        # 计算新的数据范围
+        new_start_idx = max(0, current_start_idx - step * direction)
+        new_end_idx = min(len(self.full_data) - 1, current_end_idx - step * direction)
         
         # 确保至少显示一定数量的K线
-        if max_idx - min_idx < 10:
+        min_display_count = 30
+        if new_end_idx - new_start_idx < min_display_count:
             if direction > 0:  # 向前移动
-                max_idx = min(data_length - 1, min_idx + 10)
+                new_end_idx = min(len(self.full_data) - 1, new_start_idx + min_display_count)
             else:  # 向后移动
-                min_idx = max(0, max_idx - 10)
+                new_start_idx = max(0, new_end_idx - min_display_count)
         
-        # 打印当前区域的时间范围，帮助调试
-        if 0 <= min_idx < data_length and 0 <= max_idx < data_length:
-            start_time = datetime.fromtimestamp(self.current_data[min_idx][0])
-            end_time = datetime.fromtimestamp(self.current_data[max_idx][0])
-            print(f"移动到时间范围: {start_time} -> {end_time}, 索引范围: {min_idx} -> {max_idx}")
+        # 动态加载新的数据段
+        self.current_data = self.full_data[new_start_idx:new_end_idx + 1]
         
-        # 当移动到边界附近时，更新Y轴范围（价格范围）
+        # 打印当前区域的时间范围
+        if self.current_data:
+            start_time = datetime.fromtimestamp(self.current_data[0][0])
+            end_time = datetime.fromtimestamp(self.current_data[-1][0])
+            print(f"加载新数据段: {start_time} -> {end_time}")
+            print(f"数据范围: {new_start_idx} -> {new_end_idx}, 共{len(self.current_data)}条K线")
+        
+        # 更新Y轴范围（价格范围）
         try:
-            # 获取当前可见区域的数据
-            visible_indices = range(min_idx, max_idx + 1)
             data_np = np.array(self.current_data, dtype=float)
-            
-            if min_idx >= len(data_np) or max_idx >= len(data_np):
-                print(f"警告：索引超出范围！min_idx={min_idx}, max_idx={max_idx}, data_length={len(data_np)}")
-                # 修正索引范围
-                min_idx = min(min_idx, len(data_np) - 1)
-                max_idx = min(max_idx, len(data_np) - 1)
-                visible_indices = range(min_idx, max_idx + 1)
-            
-            # 获取可见区域内的最高价和最低价
-            visible_highs = data_np[visible_indices, 2]  # high
-            visible_lows = data_np[visible_indices, 3]   # low
-            
-            max_price = np.max(visible_highs)
-            min_price = np.min(visible_lows)
+            max_price = np.max(data_np[:, 2])  # high
+            min_price = np.min(data_np[:, 3])  # low
             
             # 计算价格范围，并添加边距
             price_range = max_price - min_price
@@ -356,30 +356,37 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             
             # 设置价格轴范围
             self.price_plot.setYRange(min_price - padding, max_price + padding)
-            print(f"更新价格范围: {min_price - padding:.2f} -> {max_price + padding:.2f}")
         except Exception as e:
             print(f"更新价格范围出错: {e}")
         
+        # 重新绘制K线图
+        self.plot_kline(self.current_data, self.current_title)
+        
         # 设置新的显示范围（使用平滑动画）
-        self.setXRangeWithAnimation(min_idx - 0.5, max_idx + 1.5)
-        print(f"移动到索引: {min_idx} -> {max_idx}，显示{max_idx - min_idx + 1}条K线")
+        self.setXRangeWithAnimation(0, len(self.current_data))
         
         # 发出更新信号
         self.kline_updated.emit()
     
-    def plot_kline(self, data, title=""):
-        """绘制K线图
+    def plot_kline(self, data, title="", max_display_count=1000):
+        """绘制K线图，支持大数据量分段加载
         
         Args:
             data: 数据列表，每项为 [timestamp, open, high, low, close, volume]
             title: 图表标题
+            max_display_count: 最大显示的K线数量，超过此数量将进行分段加载
         """
         print(f"\n===== 开始绘制K线图 =====")
-        print(f"数据长度：{len(data)} 条K线")
         
-        # 存储当前数据用于后续操作
-        self.current_data = data
+        # 存储完整数据用于后续加载
+        self.full_data = data
         self.current_title = title
+        
+        # 初始只加载最新的一部分数据
+        display_count = min(max_display_count, len(data))
+        self.current_data = data[-display_count:] if display_count > 0 else []
+        
+        print(f"加载最新的 {display_count} 条K线进行显示（总数据 {len(data)} 条）")
         
         # 清除现有图表内容
         self.price_plot.clear()
@@ -390,15 +397,18 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         self.price_plot.addItem(self.hLine, ignoreBounds=True)
         
         # 如果数据为空则返回
-        if not data or len(data) == 0:
+        if not self.current_data or len(self.current_data) == 0:
             print("没有数据可供绘制")
             return
         
-        # 打印数据时间范围
-        start_time = datetime.fromtimestamp(data[0][0])
-        end_time = datetime.fromtimestamp(data[-1][0])
-        print(f"K线时间范围：{start_time} 到 {end_time}")
-        print(f"总共 {len(data)} 条K线，覆盖 {(end_time - start_time).days} 天")
+        # 打印当前显示的数据时间范围
+        start_time = datetime.fromtimestamp(self.current_data[0][0])
+        end_time = datetime.fromtimestamp(self.current_data[-1][0])
+        print(f"当前显示K线范围：{start_time} 到 {end_time}")
+        print(f"时间跨度：{(end_time - start_time).days} 天")
+        
+        # 设置视图范围监听
+        self.price_plot.sigRangeChanged.connect(self.on_view_range_changed)
         
         # 设置标题
         self.price_plot.setTitle(title, color='#ffffff', size='12pt')

@@ -190,7 +190,7 @@ ETH_trader/
 │   ├── optimal_points.py   # 最优点标注工具
 │   ├── symbolic_miner.py   # 符号回归因子挖掘器
 ├── scripts/                # 脚本工具
-│   ├── download_history.py # 历史数据下载
+│   ├── download_history.py # 历史数据下载 (已修复数据下载bug)
 │   ├── grid_search_factors.py # 参数网格搜索
 │   ├── kline_view_pyqtgraph.py # K线图显示模块
 │   ├── run_kline_view_pyqtgraph.py # 运行K线图显示
