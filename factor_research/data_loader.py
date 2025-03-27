@@ -93,54 +93,37 @@ def load_data_segment(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=Non
     if not data_files:
         logger.error(f"未找到匹配 {data_pattern} 的数据文件")
         return pd.DataFrame()
-    
-    # 计算预加载缓冲区范围
-    try:
-        buffer_start = pd.to_datetime(start_date) - timedelta(days=buffer_days) if start_date else None
-        buffer_end = pd.to_datetime(end_date) + timedelta(days=buffer_days) if end_date else None
-    except Exception as e:
-        logger.error(f"时间范围解析失败: {str(e)}")
-        buffer_start = None
-        buffer_end = None
-
-    # 尝试从缓存获取数据段
-    segment_key = f"{data_pattern}_{start_date}_{end_date}"
-    cached_segment = _data_cache.get_segment(segment_key, start_date, end_date)
-    if cached_segment is not None:
-        return cached_segment
 
     # 分批加载并处理数据
     chunk_size = min(10000, max_records)  # 每次处理的数据量
     all_data = []
     total_records = 0
+    failed_files = []
     
     for file_path in tqdm(data_files, desc="加载数据文件"):
         try:
             # 使用分块读取CSV文件
+            file_data = []
             for chunk in pd.read_csv(file_path, chunksize=chunk_size):
                 if 'timestamp' in chunk.columns:
                     chunk['timestamp'] = pd.to_datetime(chunk['timestamp'])
+                    file_data.append(chunk)
+                    total_records += len(chunk)
                     
-                    # 如果指定了时间范围，则只加载相关数据
-                    if buffer_start or buffer_end:
-                        mask = True
-                        if buffer_start:
-                            mask = mask & (chunk['timestamp'] >= buffer_start)
-                        if buffer_end:
-                            mask = mask & (chunk['timestamp'] <= buffer_end)
-                        chunk = chunk[mask]
-                    
-                    if not chunk.empty:
-                        all_data.append(chunk)
-                        total_records += len(chunk)
-                        
-                        # 如果达到最大记录数限制，停止加载
-                        if total_records >= max_records:
-                            logger.info(f"达到数据段大小限制 {max_records}，停止加载")
-                            break
+                    # 如果达到最大记录数限制，停止加载
+                    if total_records >= max_records:
+                        logger.info(f"达到数据段大小限制 {max_records}，停止加载")
+                        break
+            
+            if file_data:
+                all_data.extend(file_data)
+                logger.info(f"成功加载文件 {file_path.name}，添加 {len(file_data)} 条记录")
+            else:
+                logger.warning(f"文件 {file_path.name} 没有数据")
                             
         except Exception as e:
-            logger.error(f"加载文件 {file_path} 失败: {str(e)}")
+            logger.error(f"加载文件 {file_path.name} 失败: {str(e)}")
+            failed_files.append((file_path.name, str(e)))
             continue
             
         # 如果达到最大记录数限制，停止加载更多文件
@@ -148,30 +131,30 @@ def load_data_segment(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=Non
             break
     
     if not all_data:
-        logger.error("数据段加载失败")
+        if failed_files:
+            logger.error(f"所有文件加载失败，失败详情：")
+            for file_name, error in failed_files:
+                logger.error(f"  - {file_name}: {error}")
+        else:
+            logger.error("没有找到数据")
         return pd.DataFrame()
     
     # 合并并排序去重
     data = pd.concat(all_data)
     data = data.sort_values('timestamp').drop_duplicates()
     
-    # 如果数据量超过限制，只保留指定范围内的数据
+    # 如果数据量超过限制，只保留最新的数据
     if len(data) > max_records:
-        if end_date:  # 如果指定了结束时间，保留最新的数据
-            data = data.tail(max_records)
-        else:  # 否则保留最早的数据
-            data = data.head(max_records)
+        data = data.tail(max_records)
+        logger.info(f"数据量超过限制，已截取最新的{max_records}条记录")
     
     logger.info(f"数据段加载完成，共 {len(data)} 条记录")
     if 'timestamp' in data.columns:
         logger.info(f"数据段时间范围: {data['timestamp'].min()} 到 {data['timestamp'].max()}")
     
-    # 缓存数据段
-    _data_cache.set_segment(segment_key, data, start_date, end_date)
-    
     return data
 
-def load_data_files(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=None, end_date=None, buffer_days=2, max_records=1000):
+def load_data_files(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=None, end_date=None, buffer_days=2, max_records=10000):
     """
     加载指定时间范围内的数据文件，支持分段加载
     
@@ -180,7 +163,7 @@ def load_data_files(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=None,
         start_date: 起始日期(datetime或str)，None表示不限制
         end_date: 结束日期(datetime或str)，None表示不限制
         buffer_days: 预加载缓冲区天数
-        max_records: 每个数据段的最大记录数
+        max_records: 每个数据段的最大记录数，默认10000条
         
     Returns:
         pandas.DataFrame: 合并后的数据
@@ -201,9 +184,9 @@ def load_data_files(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=None,
     
     # 严格限制时间范围和数据量
     date_range = (end_date - start_date).days
-    if date_range > 30:  # 最多加载30天数据
-        start_date = end_date - timedelta(days=30)
-        logger.warning(f"时间范围过大，已限制为30天: {start_date} -> {end_date}")
+    if date_range > 365:  # 最多加载1年数据
+        start_date = end_date - timedelta(days=365)
+        logger.warning(f"时间范围过大，已限制为1年: {start_date} -> {end_date}")
     
     # 加载数据段
     data = load_data_segment(data_pattern, start_date, end_date, buffer_days, max_records)
@@ -215,88 +198,5 @@ def load_data_files(data_pattern="data/kline/ETHUSDT_5m_*.csv", start_date=None,
     
     # 清理旧的缓存数据段
     _data_cache.clear_old_segments(data_pattern)
-    
-    return data
-    # 生成缓存键
-    cache_key = f"{data_pattern}_{start_date}_{end_date}_{buffer_days}_{max_records}"
-    cached_data = _data_cache.get(cache_key)
-    if cached_data is not None:
-        return cached_data
-
-    # 获取项目根目录
-    project_root = Path(__file__).parent.parent
-    
-    # 获取所有匹配的数据文件
-    data_files = sorted(list(project_root.glob(data_pattern)))
-    
-    if not data_files:
-        logger.error(f"未找到匹配 {data_pattern} 的数据文件")
-        return pd.DataFrame()
-    
-    # 计算预加载缓冲区范围
-    try:
-        buffer_start = pd.to_datetime(start_date) - timedelta(days=buffer_days) if start_date else None
-        buffer_end = pd.to_datetime(end_date) + timedelta(days=buffer_days) if end_date else None
-    except Exception as e:
-        logger.error(f"时间范围解析失败: {str(e)}")
-        buffer_start = None
-        buffer_end = None
-
-    # 分批加载并处理数据
-    chunk_size = min(10000, max_records)  # 每次处理的数据量
-    all_data = []
-    total_records = 0
-    
-    for file_path in tqdm(data_files, desc="加载数据文件"):
-        try:
-            # 使用分块读取CSV文件
-            for chunk in pd.read_csv(file_path, chunksize=chunk_size):
-                if 'timestamp' in chunk.columns:
-                    chunk['timestamp'] = pd.to_datetime(chunk['timestamp'])
-                    
-                    # 如果指定了时间范围，则只加载相关数据
-                    if buffer_start or buffer_end:
-                        mask = True
-                        if buffer_start:
-                            mask = mask & (chunk['timestamp'] >= buffer_start)
-                        if buffer_end:
-                            mask = mask & (chunk['timestamp'] <= buffer_end)
-                        chunk = chunk[mask]
-                    
-                    if not chunk.empty:
-                        all_data.append(chunk)
-                        total_records += len(chunk)
-                        
-                        # 如果达到最大记录数限制，停止加载
-                        if total_records >= max_records:
-                            logger.info(f"达到最大记录数限制 {max_records}，停止加载")
-                            break
-                            
-        except Exception as e:
-            logger.error(f"加载文件 {file_path} 失败: {str(e)}")
-            continue
-            
-        # 如果达到最大记录数限制，停止加载更多文件
-        if total_records >= max_records:
-            break
-    
-    if not all_data:
-        logger.error("所有文件加载失败")
-        return pd.DataFrame()
-    
-    # 合并并排序去重
-    data = pd.concat(all_data)
-    data = data.sort_values('timestamp').drop_duplicates()
-    
-    # 如果数据量超过限制，只保留最新的数据
-    if len(data) > max_records:
-        data = data.tail(max_records)
-    
-    logger.info(f"数据加载完成，共 {len(data)} 条记录")
-    if 'timestamp' in data.columns:
-        logger.info(f"数据时间范围: {data['timestamp'].min()} 到 {data['timestamp'].max()}")
-    
-    # 缓存数据
-    _data_cache.set(cache_key, data)
     
     return data

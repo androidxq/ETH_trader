@@ -1,5 +1,5 @@
 from binance.client import Client
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import pandas as pd
 import logging
 import time
@@ -93,20 +93,39 @@ class BinanceFetcher:
             return pd.DataFrame()
 
     def fetch_historical_data(self, symbol: str, interval: str, 
-                            years: int = 2, segment_days: int = 30):
+                            start_date=None, end_date=None, 
+                            years: int = 2, segment_days: int = 30,
+                            progress_callback=None):
         """分段获取历史数据
         
         Args:
             symbol: 交易对符号
             interval: K线间隔
-            years: 获取多少年的数据
+            start_date: 起始日期（date对象）
+            end_date: 结束日期（date对象）
+            years: 如果未提供start_date，获取多少年的数据
             segment_days: 每段数据的天数
+            progress_callback: 进度回调函数，接收(current, total)参数
             
         Returns:
             pandas.DataFrame: 合并后的历史数据
         """
-        end_time = datetime.now()
-        start_time = end_time - timedelta(days=365 * years)
+        # 如果提供了精确的日期范围，优先使用它们
+        if end_date is None:
+            end_time = datetime.now()
+        elif isinstance(end_date, date):
+            # 转换date对象为当天的结束时间
+            end_time = datetime.combine(end_date, datetime.max.time())
+        else:
+            end_time = end_date
+
+        if start_date is None:
+            start_time = end_time - timedelta(days=365 * years)
+        elif isinstance(start_date, date):
+            # 转换date对象为当天的开始时间
+            start_time = datetime.combine(start_date, datetime.min.time())
+        else:
+            start_time = start_date
         
         all_data = []
         current_start = start_time
@@ -122,6 +141,7 @@ class BinanceFetcher:
         # 添加进度条
         total_segments = (end_time - start_time).days // segment_days + 1
         with tqdm(total=total_segments, desc=f"下载 {symbol} {interval} 数据") as pbar:
+            segment_count = 0
             while current_start < end_time:
                 current_end = min(current_start + timedelta(days=segment_days), end_time)
                 
@@ -152,7 +172,12 @@ class BinanceFetcher:
                     logging.error(f"获取 {current_start} 到 {current_end} 的数据失败，已达到最大重试次数")
                 
                 current_start = current_end
+                segment_count += 1
                 pbar.update(1)
+                
+                # 调用进度回调更新UI
+                if progress_callback:
+                    progress_callback(segment_count, total_segments)
                 
                 # 添加请求间隔，避免触发频率限制
                 time.sleep(0.5)
