@@ -91,7 +91,6 @@ class TimeAxisItem(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):
         """处理时间轴刻度的字符串显示"""
         strings = []
-        prev_year = None
         
         for value in values:
             try:
@@ -100,16 +99,20 @@ class TimeAxisItem(pg.AxisItem):
                 if spacing > 3600 * 24 * 90:  # 超过90天的间隔
                     # 显示年月
                     strings.append(dt.strftime('%Y-%m'))
+                elif spacing > 3600 * 24 * 2:  # 超过2天的间隔
+                    # 显示月日
+                    strings.append(dt.strftime('%m-%d'))
+                elif spacing > 3600 * 2:  # 超过2小时的间隔
+                    # 显示日期和小时
+                    strings.append(dt.strftime('%d %H:%M'))
+                elif spacing > 60 * 30:  # 超过30分钟的间隔
+                    # 只显示小时和分钟
+                    strings.append(dt.strftime('%H:%M'))
                 else:
-                    # 如果年份发生变化，显示年份
-                    curr_year = dt.year
-                    if prev_year != curr_year:
-                        strings.append(dt.strftime('%Y-%m-%d'))
-                        prev_year = curr_year
-                    else:
-                        # 否则只显示月-日和时:分
-                        strings.append(dt.strftime('%m-%d %H:%M'))
-            except:
+                    # 显示分钟和秒
+                    strings.append(dt.strftime('%H:%M:%S'))
+            except Exception as e:
+                print(f"时间轴刻度格式化错误: {e}, value={value}")
                 strings.append('')
         return strings
 
@@ -213,6 +216,14 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 创建主K线图表
         self.price_plot = self.addPlot(row=0, col=0, axisItems={'bottom': price_time_axis})
         self.price_plot.showGrid(x=True, y=True, alpha=0.3)
+        
+        # 用自定义Y轴替换默认Y轴
+        left_axis = self.price_plot.getAxis('left')
+        self.price_plot.layout.removeItem(left_axis)
+        
+        # 创建自定义价格Y轴
+        price_y_axis = PriceYAxisItem(orientation='left', view_box=self.price_plot.getViewBox())
+        self.price_plot.setAxisItems({'left': price_y_axis})
         self.price_plot.setLabel('left', '价格')
         self.price_plot.setMinimumHeight(300)
         
@@ -1906,3 +1917,62 @@ class KlineViewWidget(QWidget):
                 zoom_state = "正常"
                 
             self.width_label.setText(f"K线缩放: {zoom_state} ({view_width:.0f}根)")
+
+# 自定义Y轴，支持鼠标拖动缩放
+class PriceYAxisItem(pg.AxisItem):
+    def __init__(self, *args, **kwargs):
+        self.view_box = kwargs.pop('view_box', None)
+        super(PriceYAxisItem, self).__init__(*args, **kwargs)
+        self.setLabel(text='价格', units=None)
+        self.enableAutoSIPrefix(False)
+        
+        # 鼠标拖动相关变量
+        self.mouse_dragging = False
+        self.drag_start_pos = None
+        self.drag_start_range = None
+        
+    def mousePressEvent(self, event):
+        """处理鼠标按下事件，开始拖动"""
+        if event.button() == Qt.MouseButton.LeftButton and self.view_box:
+            self.mouse_dragging = True
+            self.drag_start_pos = event.pos().y()
+            self.drag_start_range = self.view_box.viewRange()[1]
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+            
+    def mouseReleaseEvent(self, event):
+        """处理鼠标释放事件，结束拖动"""
+        if event.button() == Qt.MouseButton.LeftButton and self.mouse_dragging:
+            self.mouse_dragging = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+            
+    def mouseMoveEvent(self, event):
+        """处理鼠标移动事件，执行Y轴缩放"""
+        if self.mouse_dragging and self.view_box:
+            current_y = event.pos().y()
+            dy = current_y - self.drag_start_pos
+            
+            # 计算缩放系数，向下拖动时使范围变大（缩小）
+            # 向上拖动时使范围变小（放大）
+            scale_factor = 1.0 + dy * 0.01
+            
+            # 确保缩放系数在合理范围内
+            scale_factor = max(0.5, min(scale_factor, 2.0))
+            
+            # 应用新的Y轴范围
+            start_range = self.drag_start_range
+            center = (start_range[0] + start_range[1]) / 2
+            height = (start_range[1] - start_range[0]) * scale_factor
+            
+            # 计算新的Y轴范围
+            min_y = center - height / 2
+            max_y = center + height / 2
+            
+            # 设置新的视图范围
+            self.view_box.setYRange(min_y, max_y, padding=0)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)

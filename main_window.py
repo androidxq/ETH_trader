@@ -19,7 +19,7 @@ sys.path.insert(0, str(project_root))
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QTabWidget, QLabel, QPushButton, 
                            QStatusBar, QComboBox, QSplitter, QMenuBar, QMessageBox)
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QAction
 
 # 导入项目模块
@@ -57,7 +57,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.kline_tab, "K线图")
         
         # 创建网格搜索UI标签页
-        self.grid_search_tab = GridSearchUI()
+        self.grid_search_tab = GridSearchUI(self)  # 传入父组件
         self.tab_widget.addTab(self.grid_search_tab, "因子网格搜索")
         
         # 添加数据下载标签页
@@ -71,6 +71,9 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("ETH交易系统启动完成")
+        
+        # 连接标签页切换信号，确保UI元素正确更新
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
         
     def create_menu(self):
         """创建菜单栏"""
@@ -121,6 +124,16 @@ class MainWindow(QMainWindow):
         y = (screen_geometry.height() - window_geometry.height()) // 2
         
         self.move(x, y)
+
+    def on_tab_changed(self, index):
+        """处理标签页切换事件"""
+        # 获取当前标签页
+        current_tab = self.tab_widget.widget(index)
+        
+        # 如果是网格搜索标签页，确保其UI元素正确显示
+        if current_tab == self.grid_search_tab:
+            # 使用QTimer延迟执行，确保标签页完全显示后再刷新UI
+            QTimer.singleShot(100, current_tab.update)
 
 if __name__ == "__main__":
     # 创建QApplication实例
