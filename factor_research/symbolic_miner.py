@@ -99,37 +99,207 @@ class SymbolicFactorMiner:
         # 添加演化历史记录
         self.evolution_history = []
         
-    def _prepare_features(self, data: pd.DataFrame) -> np.ndarray:
-        """准备特征矩阵"""
+    def _prepare_features(self, data: pd.DataFrame, factor_type: str = "量价获利因子") -> np.ndarray:
+        """
+        准备特征矩阵
+        
+        Args:
+            data: DataFrame格式的K线数据
+            factor_type: 因子类型，目前支持"量价获利因子"、"支撑阻力因子"等
+            
+        Returns:
+            np.ndarray: 特征矩阵
+        """
         features = []
         
-        # 1. 基础价格特征
+        # 1. 基础价格特征 - 所有因子类型都需要
         for col in ['open', 'high', 'low', 'close', 'volume']:
             features.append(data[col].values)
             
-        # 2. 价格差异特征
+        # 2. 价格差异特征 - 所有因子类型都需要
         features.append(data['high'] - data['low'])  # 振幅
         features.append(data['close'] - data['open']) # 实体
         features.append((data['high'] - data['low'])/data['close']) # 相对振幅
         
-        # 3. 滚动统计特征
-        for window in self.windows:
-            for col in ['close', 'volume']:
-                for metric in self.metric_set:
-                    if metric == 'mean':
-                        feat = data[col].rolling(window).mean()
-                    elif metric == 'std':
-                        feat = data[col].rolling(window).std()
-                    elif metric == 'max':
-                        feat = data[col].rolling(window).max()
-                    elif metric == 'min':
-                        feat = data[col].rolling(window).min()
-                    features.append(feat.values)
-        
-        # 4. 动量特征
-        for window in self.windows:
-            features.append(data['close'].pct_change(window).values)
+        # 3. 根据不同的因子类型准备不同的特征
+        if factor_type == "支撑阻力因子":
+            print_with_pid("为支撑阻力因子准备特殊特征...")
             
+            # A. 加入关键价位特征
+            # 价格的历史高点和低点 (不同周期)
+            for window in [5, 10, 20, 50, 100, 200]:
+                if len(data) > window:
+                    # 滚动最高价和最低价
+                    features.append(data['high'].rolling(window=window).max().values)
+                    features.append(data['low'].rolling(window=window).min().values)
+                    
+                    # 当前价格与历史高低点的距离
+                    high_max = data['high'].rolling(window=window).max()
+                    low_min = data['low'].rolling(window=window).min()
+                    features.append((data['close'] - low_min) / (high_max - low_min + 1e-10))  # 相对位置
+            
+            # B. 添加斐波那契回撤水平
+            # 用100日区间计算斐波那契回撤水平点位
+            if len(data) > 100:
+                high_100 = data['high'].rolling(window=100).max()
+                low_100 = data['low'].rolling(window=100).min()
+                range_100 = high_100 - low_100
+                
+                # 添加主要斐波那契回撤水平
+                features.append((low_100 + range_100 * 0.236).values)  # 23.6% 回撤
+                features.append((low_100 + range_100 * 0.382).values)  # 38.2% 回撤
+                features.append((low_100 + range_100 * 0.5).values)    # 50% 回撤
+                features.append((low_100 + range_100 * 0.618).values)  # 61.8% 回撤
+                features.append((low_100 + range_100 * 0.786).values)  # 78.6% 回撤
+                
+                # 价格与各回撤水平的距离
+                for level in [0.236, 0.382, 0.5, 0.618, 0.786]:
+                    fib_level = low_100 + range_100 * level
+                    features.append((data['close'] - fib_level).values)  # 距离
+                    features.append(((data['close'] - fib_level) / data['close']).values)  # 相对距离
+            
+            # C. 添加支撑阻力带指标
+            # 布林带作为动态支撑阻力
+            for window in [20, 50, 100]:
+                if len(data) > window:
+                    # 计算布林带
+                    ma = data['close'].rolling(window=window).mean()
+                    std = data['close'].rolling(window=window).std()
+                    features.append(ma.values)  # 移动平均线
+                    features.append((ma + 2 * std).values)  # 上轨
+                    features.append((ma - 2 * std).values)  # 下轨
+                    
+                    # 价格与布林带的相对位置
+                    features.append(((data['close'] - ma) / (2 * std + 1e-10)).values)  # 布林带位置
+                    features.append(((data['close'] - (ma - 2 * std)) / (4 * std + 1e-10)).values)  # 相对下轨
+                    features.append((((ma + 2 * std) - data['close']) / (4 * std + 1e-10)).values)  # 相对上轨
+            
+            # D. 添加突破检测特征
+            # 价格突破历史高低点
+            for window in [20, 50, 100]:
+                if len(data) > window + 1:  # 确保有足够的历史数据
+                    prev_high = data['high'].shift(1).rolling(window=window).max()
+                    prev_low = data['low'].shift(1).rolling(window=window).min()
+                    
+                    # 计算突破指标
+                    up_break = (data['close'] > prev_high).astype(float)
+                    down_break = (data['close'] < prev_low).astype(float)
+                    features.append(up_break)  # 向上突破
+                    features.append(down_break)  # 向下突破
+                    features.append((up_break - down_break).values)  # 净突破
+
+            # E. 添加价格形态特征
+            # 双顶双底等形态检测
+            if len(data) > 30:
+                # 简化的形态检测
+                close = data['close'].values
+                for shift in [5, 10, 15]:
+                    if len(close) > shift * 2:
+                        # 寻找局部高点和低点
+                        peak_pattern = (close[shift:-shift] > close[:-shift*2]) & (close[shift:-shift] > close[shift*2:])
+                        trough_pattern = (close[shift:-shift] < close[:-shift*2]) & (close[shift:-shift] < close[shift*2:])
+                        
+                        # 将形态检测结果填充为与原始数据相同长度的数组
+                        peak_full = np.zeros(len(close))
+                        trough_full = np.zeros(len(close))
+                        
+                        # 填充形态检测结果
+                        peak_full[shift:-shift] = peak_pattern
+                        trough_full[shift:-shift] = trough_pattern
+                        
+                        features.append(peak_full)  # 高点模式
+                        features.append(trough_full)  # 低点模式
+            
+        elif factor_type == "趋势动能因子":
+            # 为趋势动能因子添加特殊特征
+            for window in self.windows:
+                # 添加趋势指标
+                if len(data) > window:
+                    # 计算价格斜率和动量
+                    features.append(data['close'].diff(window).values)  # 价格变化
+                    features.append((data['close'].diff(window) / (data['close'].shift(window) + 1e-10)).values)  # 价格变化率
+                    
+                    # 计算趋势强度
+                    up_days = (data['close'].diff() > 0).rolling(window=window).sum()
+                    down_days = (data['close'].diff() < 0).rolling(window=window).sum()
+                    features.append((up_days - down_days).values)  # 上涨天数减去下跌天数
+                    features.append((up_days / (up_days + down_days + 1e-10)).values)  # 上涨天数占比
+                    
+                    # 计算价格加速度
+                    features.append(data['close'].diff().diff().rolling(window=window).mean().values)  # 价格加速度
+            
+            # 添加特定动量指标
+            features.append(data['close'].pct_change(5).rolling(window=3).mean().values)  # 短期动量
+            features.append(data['close'].pct_change(20).rolling(window=5).mean().values)  # 中期动量
+            features.append(data['close'].pct_change(60).rolling(window=10).mean().values)  # 长期动量
+            
+        elif factor_type == "波动率因子":
+            # 为波动率因子添加特殊特征
+            for window in self.windows:
+                if len(data) > window:
+                    # 计算各种波动率指标
+                    features.append(data['close'].pct_change().rolling(window=window).std().values)  # 收盘价波动率
+                    features.append(((data['high'] - data['low']) / data['close']).rolling(window=window).mean().values)  # 日内波动范围
+                    
+                    # 计算波动率变化趋势
+                    vol = data['close'].pct_change().rolling(window=window).std()
+                    features.append(vol.diff(5).values)  # 波动率变化趋势
+                    features.append((vol / vol.shift(window)).values)  # 波动率相对变化
+                    
+                    # 计算异常波动指标
+                    mean_vol = vol.rolling(window=3*window).mean()
+                    features.append((vol / (mean_vol + 1e-10) - 1).values)  # 相对于过去的异常波动
+            
+            # 添加ATR及其变种
+            # 计算ATR(平均真实波幅)
+            high_low = data['high'] - data['low']
+            high_close = (data['high'] - data['close'].shift()).abs()
+            low_close = (data['low'] - data['close'].shift()).abs()
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            
+            for window in [5, 10, 14, 20, 30]:
+                if len(data) > window:
+                    features.append(tr.rolling(window=window).mean().values)  # ATR
+                    features.append((tr.rolling(window=window).mean() / data['close']).values)  # ATR占比
+                    features.append(tr.rolling(window=window).mean().diff(5).values)  # ATR变化
+            
+        elif factor_type == "流动性因子":
+            # 为流动性因子添加特殊特征
+            for window in self.windows:
+                if len(data) > window:
+                    # 基础成交量指标
+                    features.append(data['volume'].rolling(window=window).mean().values)  # 平均成交量
+                    features.append((data['volume'] / data['volume'].rolling(window=window).mean()).values)  # 相对成交量
+                    
+                    # 价格与成交量关系
+                    features.append((data['close'].diff().abs() * data['volume']).values)  # 成交额
+                    features.append((data['close'].diff() * data['volume']).values)  # 成交额方向
+                    features.append((data['close'].diff().abs() / (data['volume'] + 1e-10)).values)  # 价格影响力
+                    
+                    # 流动性变化
+                    vol_ma = data['volume'].rolling(window=window).mean()
+                    features.append(vol_ma.diff(5).values)  # 成交量变化趋势
+                    features.append((vol_ma / vol_ma.shift(window)).values)  # 成交量相对变化
+        
+        else:  # 默认为量价获利因子
+            # 3. 滚动统计特征
+            for window in self.windows:
+                for col in ['close', 'volume']:
+                    for metric in self.metric_set:
+                        if metric == 'mean':
+                            feat = data[col].rolling(window).mean()
+                        elif metric == 'std':
+                            feat = data[col].rolling(window).std()
+                        elif metric == 'max':
+                            feat = data[col].rolling(window).max()
+                        elif metric == 'min':
+                            feat = data[col].rolling(window).min()
+                        features.append(feat.values)
+            
+            # 4. 动量特征
+            for window in self.windows:
+                features.append(data['close'].pct_change(window).values)
+        
         # 转换为numpy数组并标准化
         X = np.column_stack(features)
         X = np.nan_to_num(X, nan=0)
@@ -144,10 +314,14 @@ class SymbolicFactorMiner:
     
     def mine_factors(self, data: pd.DataFrame, 
                     n_best: int = 3,
-                    forward_period: int = 24) -> List[Dict]:
+                    forward_period: int = 24,
+                    transaction_fee: float = 0.1,  # 交易手续费率，百分比
+                    min_trade_return: float = 0.3,  # 单次交易最小收益，百分比
+                    factor_type: str = "量价获利因子"  # 因子类型
+                   ) -> List[Dict]:
         """挖掘因子"""
         logging.info("开始准备特征...")
-        X = self._prepare_features(data)
+        X = self._prepare_features(data, factor_type)
         y = self._prepare_target(data, forward_period)
         
         # 先移除包含NaN的样本
@@ -170,6 +344,8 @@ class SymbolicFactorMiner:
         print_with_pid(f"特征数量: {X.shape[1]}")
         print_with_pid(f"样本数量: {X.shape[0]}")
         print_with_pid(f"预测周期: {forward_period}")
+        print_with_pid(f"交易手续费率: {transaction_fee}%")
+        print_with_pid(f"单次交易最小收益: {min_trade_return}%")
         print_with_pid(f"种群大小: {self.regressor.population_size}")
         print_with_pid(f"进化代数: {self.regressor.generations}")
         print_with_pid(f"锦标赛大小: {self.regressor.tournament_size}")
@@ -513,32 +689,37 @@ class SymbolicFactorMiner:
                 }
                 best_programs.append(factor)
         
-        # 按照适应度排序
-        best_programs.sort(key=lambda x: x['fitness'], reverse=True)
-        
         # 评估最优因子
         for factor in best_programs:
-            metrics = self.evaluate_factor(factor, data, forward_period)
+            metrics = self.evaluate_factor(factor, data, forward_period, transaction_fee, min_trade_return)
             factor.update(metrics)
             
         # 再次按评估指标排序，使用综合得分
         for factor in best_programs:
-            # 计算综合得分: |IC| * 稳定性 * (做多收益 + 做空收益) / 复杂度
+            # 计算综合得分: |IC| * 稳定性 * (做多净收益 + 做空净收益) / 复杂度
             ic_abs = abs(factor['ic'])
             stability = abs(factor['stability'])  # 使用绝对值避免负稳定性
-            total_returns = factor['long_returns'] + factor['short_returns']
+            
+            # 使用净收益而不是原始收益
+            total_net_returns = factor['long_net_returns'] + factor['short_net_returns']
+            
+            # 考虑有效交易比例
+            valid_trades_factor = (factor['long_valid_trades_ratio'] + factor['short_valid_trades_ratio']) / 2
+            valid_trades_factor = max(0.01, valid_trades_factor)  # 确保非零
+            
             complexity_penalty = 1 / max(1, factor['complexity'] / 5)  # 复杂度惩罚
             
             # 避免NaN和无穷大
             if np.isnan(ic_abs) or np.isinf(ic_abs): ic_abs = 0.0
             if np.isnan(stability) or np.isinf(stability): stability = 0.0
-            if np.isnan(total_returns) or np.isinf(total_returns): total_returns = 0.0
+            if np.isnan(total_net_returns) or np.isinf(total_net_returns): total_net_returns = 0.0
             
             # 避免总收益为负的情况
-            if total_returns <= 0:
-                total_returns = 0.0001  # 给一个很小的正值
+            if total_net_returns <= 0:
+                total_net_returns = 0.0001  # 给一个很小的正值
                 
-            factor['score'] = ic_abs * stability * total_returns * complexity_penalty * 1000
+            # 计算最终得分，加入有效交易因子
+            factor['score'] = ic_abs * stability * total_net_returns * complexity_penalty * valid_trades_factor * 1000
             
             # 如果得分无效，设为0
             if np.isnan(factor['score']) or np.isinf(factor['score']):
@@ -551,7 +732,10 @@ class SymbolicFactorMiner:
     
     def evaluate_factor(self, factor: Dict, 
                        data: pd.DataFrame,
-                       forward_period: int = 24) -> Dict[str, float]:
+                       forward_period: int = 24,
+                       transaction_fee: float = 0.1,  # 交易手续费率，百分比
+                       min_trade_return: float = 0.3  # 单次交易最小收益，百分比
+                      ) -> Dict[str, float]:
         """评估因子表现"""
         X = self._prepare_features(data)
         factor_values = factor['program'].execute(X)
@@ -580,6 +764,10 @@ class SymbolicFactorMiner:
                 'complexity': factor['complexity'],
                 'long_returns': 0.0,
                 'short_returns': 0.0,
+                'long_net_returns': 0.0,  # 考虑交易费用的净收益
+                'short_net_returns': 0.0,  # 考虑交易费用的净收益
+                'long_valid_trades_ratio': 0.0,  # 符合最小收益要求的交易比例
+                'short_valid_trades_ratio': 0.0,  # 符合最小收益要求的交易比例
                 'valid_data_ratio': 0.0 if len(valid_idx) == 0 else sum(valid_data) / len(valid_idx)
             }
             
@@ -602,7 +790,7 @@ class SymbolicFactorMiner:
         else:
             stability = 0.0
         
-        # 计算因子收益率
+        # 计算因子收益率，考虑交易费用和最小收益
         if len(factor_values) >= 10:  # 确保有足够样本计算分位数
             long_threshold = np.percentile(factor_values, 80)
             short_threshold = np.percentile(factor_values, 20)
@@ -610,22 +798,68 @@ class SymbolicFactorMiner:
             long_positions = factor_values > long_threshold
             short_positions = factor_values < short_threshold
             
+            # 做多收益计算
+            long_returns = 0.0
+            long_net_returns = 0.0  # 考虑交易费用后的净收益
+            long_valid_trades = 0    # 符合最小收益要求的交易数量
+            long_trades_count = 0    # 总交易数量
+            
             if np.any(long_positions):
-                long_returns = future_returns[long_positions].mean()
+                # 原始做多收益
+                long_returns_array = future_returns[long_positions]
+                long_returns = long_returns_array.mean() if len(long_returns_array) > 0 else 0.0
+                
+                # 净收益 = 原始收益 - 交易费用
+                long_net_returns_array = long_returns_array - transaction_fee/100
+                long_net_returns = long_net_returns_array.mean() if len(long_net_returns_array) > 0 else 0.0
+                
+                # 计算符合最小收益要求的交易比例
+                long_trades_count = len(long_returns_array)
+                long_valid_trades = np.sum(long_net_returns_array >= min_trade_return/100) if long_trades_count > 0 else 0
+                
+                # 确保结果有效
                 if np.isnan(long_returns) or np.isinf(long_returns):
                     long_returns = 0.0
-            else:
-                long_returns = 0.0
-                
+                if np.isnan(long_net_returns) or np.isinf(long_net_returns):
+                    long_net_returns = 0.0
+            
+            # 做空收益计算
+            short_returns = 0.0
+            short_net_returns = 0.0  # 考虑交易费用后的净收益
+            short_valid_trades = 0    # 符合最小收益要求的交易数量
+            short_trades_count = 0    # 总交易数量
+            
             if np.any(short_positions):
-                short_returns = -future_returns[short_positions].mean()
+                # 原始做空收益 (注意做空收益是负的未来收益)
+                short_returns_array = -future_returns[short_positions]
+                short_returns = short_returns_array.mean() if len(short_returns_array) > 0 else 0.0
+                
+                # 净收益 = 原始收益 - 交易费用
+                short_net_returns_array = short_returns_array - transaction_fee/100
+                short_net_returns = short_net_returns_array.mean() if len(short_net_returns_array) > 0 else 0.0
+                
+                # 计算符合最小收益要求的交易比例
+                short_trades_count = len(short_returns_array)
+                short_valid_trades = np.sum(short_net_returns_array >= min_trade_return/100) if short_trades_count > 0 else 0
+                
+                # 确保结果有效
                 if np.isnan(short_returns) or np.isinf(short_returns):
                     short_returns = 0.0
-            else:
-                short_returns = 0.0
+                if np.isnan(short_net_returns) or np.isinf(short_net_returns):
+                    short_net_returns = 0.0
         else:
             long_returns = 0.0
             short_returns = 0.0
+            long_net_returns = 0.0
+            short_net_returns = 0.0
+            long_valid_trades = 0
+            short_valid_trades = 0
+            long_trades_count = 0
+            short_trades_count = 0
+        
+        # 计算符合最小收益要求的交易比例
+        long_valid_trades_ratio = long_valid_trades / long_trades_count if long_trades_count > 0 else 0.0
+        short_valid_trades_ratio = short_valid_trades / short_trades_count if short_trades_count > 0 else 0.0
         
         return {
             'ic': ic,
@@ -633,6 +867,10 @@ class SymbolicFactorMiner:
             'complexity': factor['complexity'],
             'long_returns': long_returns,
             'short_returns': short_returns,
+            'long_net_returns': long_net_returns,  # 考虑交易费用的净收益
+            'short_net_returns': short_net_returns,  # 考虑交易费用的净收益
+            'long_valid_trades_ratio': long_valid_trades_ratio,  # 符合最小收益要求的交易比例
+            'short_valid_trades_ratio': short_valid_trades_ratio,  # 符合最小收益要求的交易比例
             'valid_data_ratio': sum(valid_data) / len(valid_idx) if len(valid_idx) > 0 else 0.0
         }
 
@@ -662,3 +900,56 @@ class SymbolicFactorMiner:
         print_with_pid("")
         print_with_pid("预计剩余时间：完成所有进化预计还需要的时间")
         print_with_pid("==================================================\n")
+
+    def evaluate_expression(self, data: pd.DataFrame, expression: str, factor_type: str = "量价获利因子") -> np.ndarray:
+        """
+        评估一个表达式并返回计算的因子值
+        
+        Args:
+            data: DataFrame格式的K线数据
+            expression: 因子表达式
+            factor_type: 因子类型，需要与_prepare_features方法中的类型一致
+            
+        Returns:
+            np.ndarray: 计算的因子值
+        """
+        try:
+            import sympy
+            from sympy.parsing.sympy_parser import parse_expr
+            from sympy import symbols, lambdify
+            import numpy as np
+            
+            # 为了简化，我们假设这个方法被调用时，表达式是有效的
+            # 在实际应用中需要更强健的错误处理
+            
+            # 首先准备特征矩阵，使用指定的因子类型
+            X = self._prepare_features(data, factor_type)
+            
+            # 解析表达式中使用的变量
+            # 假设表达式中的变量形式为 X0, X1, X2 等
+            variables = [f"X{i}" for i in range(X.shape[1])]
+            sym_vars = symbols(variables)
+            
+            # 解析表达式
+            sym_expr = parse_expr(expression)
+            
+            # 将符号表达式转换为可计算的函数
+            func = lambdify(sym_vars, sym_expr, "numpy")
+            
+            # 计算每一行
+            result = np.zeros(len(data))
+            for i in range(len(data)):
+                if i < X.shape[0]:  # 确保索引有效
+                    try:
+                        args = [X[i, j] for j in range(X.shape[1])]
+                        result[i] = func(*args)
+                    except Exception as e:
+                        print(f"计算行 {i} 时出错: {e}")
+                        result[i] = np.nan
+            
+            return result
+        
+        except Exception as e:
+            print(f"评估表达式时出错: {e}")
+            # 出错时返回全NaN数组
+            return np.full(len(data), np.nan)

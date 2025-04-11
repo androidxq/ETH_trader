@@ -1,0 +1,11 @@
+{
+    "factor_expression": "div(X10, log(X55))",
+    "forward_period": 48,
+    "transaction_fee": 0.04,
+    "min_trade_return": 1.0,
+    "stop_loss": 0.5,
+    "initial_capital": 1000.0,
+    "long_threshold": 0.8,
+    "short_threshold": 0.2,
+    "trade_direction": "只做多"
+}

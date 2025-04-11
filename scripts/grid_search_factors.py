@@ -219,10 +219,16 @@ def _single_search(args):
             **FIXED_PARAMS
         )
         
+        # 获取交易手续费和最小交易收益参数（如果存在）
+        transaction_fee = params.get('transaction_fee', 0.1)  # 默认为0.1%
+        min_trade_return = params.get('min_trade_return', 0.3)  # 默认为0.3%
+        
         # 执行挖掘
         result = miner.mine_factors(
             df,
-            forward_period=params['forward_period']
+            forward_period=params['forward_period'],
+            transaction_fee=transaction_fee,
+            min_trade_return=min_trade_return
         )
         
         # 处理结果
@@ -446,6 +452,10 @@ class FactorGridSearch:
         stopping_criteria = params.get("stopping_criteria", 0.001)  # 设置stopping_criteria为0.001
         n_best = params.get("n_best", 5)
         
+        # 提取因子筛选相关参数
+        transaction_fee = params.get("transaction_fee", 0.1)  # 交易手续费率（百分比）
+        min_trade_return = params.get("min_trade_return", 0.3)  # 最小交易收益（百分比）
+        
         # 打印当前参数组合
         print_with_pid("\n" + "="*50)
         print_with_pid(f"开始搜索参数组合:")
@@ -460,6 +470,8 @@ class FactorGridSearch:
         print_with_pid(f"  复杂度惩罚系数: {parsimony_coefficient}")
         print_with_pid(f"  初始深度范围: {init_depth}")
         print_with_pid(f"  停止条件: {stopping_criteria}")
+        print_with_pid(f"  交易手续费率: {transaction_fee}%")
+        print_with_pid(f"  最小交易收益: {min_trade_return}%")
         print_with_pid("="*50)
         
         # 创建因子挖掘器实例
@@ -480,7 +492,13 @@ class FactorGridSearch:
         
         # 执行因子挖掘
         try:
-            factors = miner.mine_factors(data, n_best=n_best, forward_period=forward_period)
+            factors = miner.mine_factors(
+                data, 
+                n_best=n_best, 
+                forward_period=forward_period,
+                transaction_fee=transaction_fee,
+                min_trade_return=min_trade_return
+            )
             
             # 计算耗时
             elapsed_time = time.time() - start_time
@@ -589,13 +607,19 @@ class FactorGridSearch:
                             "generations": generations,
                             "population_size": population_size,
                             "tournament_size": tournament_size,
+                            "transaction_fee": 0.1,  # 默认交易手续费率为0.1%
+                            "min_trade_return": 0.3,  # 默认最小交易收益为0.3%
                             **FIXED_PARAMS
                         }
                         all_param_combinations.append(params)
         
         # 添加特殊组合
         for special_combo in SPECIAL_COMBINATIONS:
-            # 确保特殊组合中包含所有必要的固定参数
+            # 确保特殊组合中包含所有必要的固定参数和交易参数
+            if "transaction_fee" not in special_combo:
+                special_combo["transaction_fee"] = 0.1
+            if "min_trade_return" not in special_combo:
+                special_combo["min_trade_return"] = 0.3
             combo = {**FIXED_PARAMS, **special_combo}
             all_param_combinations.append(combo)
         
@@ -712,14 +736,15 @@ class FactorGridSearch:
                     f.write(f"- 表达式: `{factor['expression']}`\n")
                     f.write(f"- 预测能力(IC): {factor['ic']:.4f}\n")
                     f.write(f"- 稳定性: {factor['stability']:.4f}\n")
-                    f.write(f"- 多头收益: {factor.get('long_returns', 0.0):.4f}\n")
-                    f.write(f"- 空头收益: {factor.get('short_returns', 0.0):.4f}\n")
+                    f.write(f"- 多头原始收益: {factor.get('long_returns', 0.0):.4f}\n")
+                    f.write(f"- 多头净收益(扣除手续费): {factor.get('long_net_returns', 0.0):.4f}\n")
+                    f.write(f"- 多头有效交易比例: {factor.get('long_valid_trades_ratio', 0.0):.2f}\n")
+                    f.write(f"- 空头原始收益: {factor.get('short_returns', 0.0):.4f}\n")
+                    f.write(f"- 空头净收益(扣除手续费): {factor.get('short_net_returns', 0.0):.4f}\n")
+                    f.write(f"- 空头有效交易比例: {factor.get('short_valid_trades_ratio', 0.0):.2f}\n")
                     f.write(f"- 复杂度: {factor['complexity']}\n")
-                    f.write(f"- 参数组合:\n")
-                    for k, v in factor['params'].items():
-                        if k != 'n_best':  # 忽略n_best参数
-                            f.write(f"  - {k}: {v}\n")
-                    f.write("\n")
+                    f.write(f"- 交易手续费率: {result['params'].get('transaction_fee', 0.1):.2f}%\n")
+                    f.write(f"- 最小交易收益要求: {result['params'].get('min_trade_return', 0.3):.2f}%\n\n")
                 
                 # 按参数组合展示结果
                 f.write(f"## 各参数组合结果\n\n")
@@ -740,9 +765,15 @@ class FactorGridSearch:
                             f.write(f"- 表达式: `{factor['expression']}`\n")
                             f.write(f"- 预测能力(IC): {factor['ic']:.4f}\n")
                             f.write(f"- 稳定性: {factor['stability']:.4f}\n")
-                            f.write(f"- 多头收益: {factor.get('long_returns', 0.0):.4f}\n")
-                            f.write(f"- 空头收益: {factor.get('short_returns', 0.0):.4f}\n")
-                            f.write(f"- 复杂度: {factor['complexity']}\n\n")
+                            f.write(f"- 多头原始收益: {factor.get('long_returns', 0.0):.4f}\n")
+                            f.write(f"- 多头净收益(扣除手续费): {factor.get('long_net_returns', 0.0):.4f}\n")
+                            f.write(f"- 多头有效交易比例: {factor.get('long_valid_trades_ratio', 0.0):.2f}\n")
+                            f.write(f"- 空头原始收益: {factor.get('short_returns', 0.0):.4f}\n")
+                            f.write(f"- 空头净收益(扣除手续费): {factor.get('short_net_returns', 0.0):.4f}\n")
+                            f.write(f"- 空头有效交易比例: {factor.get('short_valid_trades_ratio', 0.0):.2f}\n")
+                            f.write(f"- 复杂度: {factor['complexity']}\n")
+                            f.write(f"- 交易手续费率: {result['params'].get('transaction_fee', 0.1):.2f}%\n")
+                            f.write(f"- 最小交易收益要求: {result['params'].get('min_trade_return', 0.3):.2f}%\n\n")
 
 if __name__ == "__main__":
     # 执行网格搜索

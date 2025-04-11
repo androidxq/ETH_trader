@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 import time
 import pyqtgraph as pg
 from pyqtgraph import DateAxisItem
+from PyQt6.QtCore import QTimer
+import copy
 
 # 将项目根目录添加到Python路径
 project_root = Path(__file__).parent.parent
@@ -118,46 +120,122 @@ class TimeAxisItem(pg.AxisItem):
 
 # K线图自定义Item，用于绘制单个K线
 class CandlestickItem(pg.GraphicsObject):
-    def __init__(self, data, width=0.8):
+    def __init__(self, data, width=0.8, view_range=None):
         super(CandlestickItem, self).__init__()
         self.data = data  # 数据格式应为: [timestamp, open, high, low, close, volume]
         self.picture = None
         self.width = width  # K线宽度
+        self.view_range = view_range  # 当前视图范围 (min_x, max_x)
+        self.rendered_range = None  # 当前已渲染的范围，用于避免重复渲染
         self.generatePicture()
         
+    def setViewRange(self, min_x, max_x):
+        """设置当前的视图范围，用于优化绘制性能"""
+        # 如果视图范围没有明显变化，不重新渲染
+        if self.view_range is not None:
+            old_min, old_max = self.view_range
+            # 如果新范围完全在已渲染范围内且不太接近边缘，则无需重绘
+            if self.rendered_range is not None:
+                render_min, render_max = self.rendered_range
+                # 检查是否新视图范围在已渲染区域内，且有足够的缓冲区
+                buffer = (render_max - render_min) * 0.2  # 20%的缓冲区
+                if (render_min + buffer <= min_x <= max_x <= render_max - buffer and 
+                    max_x - min_x <= (render_max - render_min) * 0.8):  # 新范围不超过已渲染范围的80%
+                    # 减少日志输出
+                    # print(f"视图范围在已渲染区域内，无需重绘: {min_x:.1f}-{max_x:.1f} 在 {render_min:.1f}-{render_max:.1f} 内")
+                    self.view_range = (min_x, max_x)
+                    return
+        
+        # 更新视图范围并重新渲染
+        self.view_range = (min_x, max_x)
+        self.generatePicture()
+        self.update()
+        
     def generatePicture(self):
-        ## 预先渲染K线图，提高绘制效率
+        """预先渲染K线图，提高绘制效率"""
+        # 创建新的图片对象
         self.picture = QPicture()
         painter = QPainter(self.picture)
         painter.setPen(pg.mkPen('w'))
         
         # 使用固定宽度，确保K线紧挨着
-        # 不再根据时间间隔计算宽度，而是使用传入的固定宽度
         width = self.width
             
-        print(f"K线绘制宽度: {width}")
+        # 确定需要绘制的数据范围
+        if self.view_range is not None:
+            min_x, max_x = self.view_range
+            # 添加缓冲区，避免滚动时看到边缘被切断
+            buffer = (max_x - min_x) * 0.5
+            min_x = max(0, int(min_x - buffer))
+            max_x = min(len(self.data) - 1, int(max_x + buffer))
+            
+            # 记录已渲染的范围
+            self.rendered_range = (min_x, max_x)
+            
+            # 只绘制在视图范围内的K线
+            visible_data = self.data[min_x:max_x+1]
+            # 减少日志输出
+            # print(f"优化渲染：只绘制视图范围内的K线 {min_x} -> {max_x}，共 {len(visible_data)} 条")
+        else:
+            # 如果没有指定视图范围，则绘制所有数据（不推荐用于大数据集）
+            visible_data = self.data
+            self.rendered_range = (0, len(self.data) - 1) if len(self.data) > 0 else None
+            # 减少日志输出
+            # print(f"全量渲染：绘制所有K线，共 {len(visible_data)} 条")
         
-        for (t, open, high, low, close, volume) in self.data:
-            # 确定K线颜色 (上涨为绿色，下跌为红色)
+        # 批量绘制K线以提高效率
+        up_prices = []  # 上涨K线的位置和价格
+        down_prices = []  # 下跌K线的位置和价格
+        up_wicks = []  # 上涨K线的影线
+        down_wicks = []  # 下跌K线的影线
+        
+        # 收集需要绘制的K线数据
+        for (t, open, high, low, close, volume) in visible_data:
             if close > open:
-                color = QColor('#26a69a')  # 绿色
+                # 上涨K线
+                up_prices.append((t, open, close))
+                up_wicks.append((t, low, high))
             else:
-                color = QColor('#ef5350')  # 红色
-                
-            # 设置画笔和画刷
-            painter.setPen(pg.mkPen(color))
+                # 下跌K线
+                down_prices.append((t, open, close))
+                down_wicks.append((t, low, high))
+        
+        # 设置画笔和画刷 - 上涨K线
+        if up_prices:
+            green_color = QColor('#26a69a')  # 绿色
+            painter.setPen(pg.mkPen(green_color))
+            painter.setBrush(pg.mkBrush(green_color))
             
-            # 绘制影线
-            painter.drawLine(QPointF(t, low), QPointF(t, high))
+            # 批量绘制上涨K线影线
+            for t, low, high in up_wicks:
+                painter.drawLine(QPointF(t, low), QPointF(t, high))
             
-            # 绘制实体
-            rect = QRectF(
-                QPointF(t - width/2, open),
-                QPointF(t + width/2, close)
-            )
-            painter.setBrush(pg.mkBrush(color))
-            painter.drawRect(rect)
+            # 批量绘制上涨K线实体
+            for t, open, close in up_prices:
+                rect = QRectF(
+                    QPointF(t - width/2, open),
+                    QPointF(t + width/2, close)
+                )
+                painter.drawRect(rect)
+        
+        # 设置画笔和画刷 - 下跌K线
+        if down_prices:
+            red_color = QColor('#ef5350')  # 红色
+            painter.setPen(pg.mkPen(red_color))
+            painter.setBrush(pg.mkBrush(red_color))
             
+            # 批量绘制下跌K线影线
+            for t, low, high in down_wicks:
+                painter.drawLine(QPointF(t, low), QPointF(t, high))
+            
+            # 批量绘制下跌K线实体
+            for t, open, close in down_prices:
+                rect = QRectF(
+                    QPointF(t - width/2, open),
+                    QPointF(t + width/2, close)
+                )
+                painter.drawRect(rect)
+        
         painter.end()
         
     def paint(self, painter, option, widget):
@@ -173,7 +251,15 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
     kline_updated = pyqtSignal()
     
     def __init__(self, parent=None):
-        super(KlineGraphWidget, self).__init__(parent)
+        """初始化图表
+        
+        Args:
+            parent: 父组件，可选
+        """
+        super().__init__(parent)
+        
+        # 设置默认为非调试模式，减少输出
+        self.debug_mode = False
         
         # 设置白色背景
         self.setBackground('#1e1e1e')
@@ -194,6 +280,10 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 视图范围控制
         self.max_display_count = 1000  # 最大显示K线数量
         self.load_threshold = 0.2      # 触发加载新数据的阈值
+        
+        # 交易标记相关
+        self.trade_markers = []        # 存储交易标记
+        self.marker_items = []         # 存储标记图形项
         
         # 创建布局
         self.setup_plots()
@@ -265,6 +355,12 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
     def on_view_range_changed(self):
         """处理视图范围变化事件"""
         try:
+            # 添加节流逻辑，避免频繁处理
+            current_time = time.time()
+            if hasattr(self, 'last_view_change_time') and current_time - self.last_view_change_time < 0.1:
+                return
+            self.last_view_change_time = current_time
+            
             # 获取当前视图索引范围
             view_min_x, view_max_x = self.price_plot.getViewBox().viewRange()[0]
             view_width = view_max_x - view_min_x
@@ -334,7 +430,7 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             target_end_idx = find_closest_index(self.full_data, visible_end_ts)
             
             # 添加一个缓冲区，确保负索引区域也能正确加载
-            buffer_size = int(view_width)  # 使用视图宽度作为缓冲区大小
+            buffer_size = max(int(view_width), 100)  # 使用视图宽度或至少100条记录作为缓冲区
             target_start_idx = max(0, target_start_idx - buffer_size)
             target_end_idx = min(len(self.full_data) - 1, target_end_idx + buffer_size)
             
@@ -351,7 +447,16 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             need_to_load = (target_start_idx < current_start_idx - 10 or  
                            target_end_idx > current_end_idx + 10 or
                            target_end_idx - target_start_idx > 2 * (current_end_idx - current_start_idx))
-                           
+            
+            # 额外检查：如果当前数据过多，也需要重新加载以减少内存占用
+            current_data_size = current_end_idx - current_start_idx + 1
+            target_data_size = target_end_idx - target_start_idx + 1
+            too_much_data = current_data_size > target_data_size * 2 and current_data_size > 1000
+            
+            if too_much_data:
+                print(f"当前加载数据过多 ({current_data_size}条)，将重新加载更精确的数据范围 ({target_data_size}条)")
+                need_to_load = True
+            
             # 额外检查：如果视图有负索引且数据不足，强制加载
             if view_min_x < 0 and min_x == 0:
                 need_to_load = True
@@ -368,26 +473,41 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
                         prev_data_len = len(self.current_data)
                         self.current_data = new_data
                         
+                        print(f"内存优化: 旧数据 {prev_data_len}条 -> 新数据 {len(new_data)}条")
+                        
                         # 如果有当前数据，打印时间范围
                         if len(self.current_data) > 0:
                             new_start_time = datetime.fromtimestamp(self.current_data[0][0])
                             new_end_time = datetime.fromtimestamp(self.current_data[-1][0])
                             print(f"当前加载数据范围: {new_start_time.strftime('%Y-%m-%d %H:%M')} -> {new_end_time.strftime('%Y-%m-%d %H:%M')}")
                         
-                        # 绘制当前数据，不重新绘制全部K线图
+                        # 重新创建时间戳到索引的映射，为标记定位做准备
+                        current_timestamps = [item[0] for item in self.current_data]
+                        self.ts_to_index = {ts: idx for idx, ts in enumerate(current_timestamps)}
+                        
+                        # 记录数据更新时间
+                        self.last_data_update_time = time.time()
+                        
+                        # 重新绘制当前数据，不重新绘制全部K线图
                         self.plot_current_data()
                         
                         # 找到新数据中与原视图中心时间戳最接近的索引
                         new_center_idx = find_closest_index(self.current_data, view_center_ts)
                         
                         # 设置新的视图范围，保持之前的视图宽度
-                        self.price_plot.setXRange(
+                        view_range = (
                             max(0, new_center_idx - view_width/2),
-                            min(len(self.current_data) - 1, new_center_idx + view_width/2),
-                            padding=0
+                            min(len(self.current_data) - 1, new_center_idx + view_width/2)
                         )
+                        self.price_plot.setXRange(view_range[0], view_range[1], padding=0)
+                        
+                        # 更新K线图项的视图范围
+                        if hasattr(self, 'candlestick_item') and self.candlestick_item is not None:
+                            self.candlestick_item.setViewRange(view_range[0], view_range[1])
                 except Exception as e:
                     print(f"加载新数据时出错: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print("无需加载新数据")
                 
@@ -980,10 +1100,11 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             min_x = max(0, len(self.current_data) - display_count - 0.5)  # 确保不会小于0
             max_x = min(len(self.current_data) - 1, len(self.current_data) - 1 + 1.5)  # 确保不会超出范围
         
+        # 创建K线项
+        self.candlestick_item = self.create_candlestick_item(indexed_data, self.bar_width, (min_x, max_x))
+        
         # 设置初始显示范围
         self.price_plot.setXRange(min_x, max_x)
-        print(f"初始显示范围: 索引 {min_x:.1f} -> {max_x:.1f}")
-        print(f"显示 {display_count} 条K线，总计加载 {len(indices)} 条K线")
         
         # 打印详细的数据加载信息
         if len(self.current_data) > 0:
@@ -1109,6 +1230,9 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         
         与plot_kline不同，该方法不会设置full_data，只处理current_data
         """
+        # 记录数据更新时间
+        self.last_data_update_time = time.time()
+        
         # 清除现有图表内容
         self.price_plot.clear()
         self.volume_plot.clear()
@@ -1122,10 +1246,11 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             print("没有数据可供绘制")
             return
         
-        # 打印当前显示的数据时间范围
-        start_time = datetime.fromtimestamp(self.current_data[0][0])
-        end_time = datetime.fromtimestamp(self.current_data[-1][0])
-        print(f"重新绘制K线范围：{start_time} 到 {end_time}")
+        # 打印当前显示的数据时间范围 - 减少不必要的输出
+        if hasattr(self, 'debug_mode') and self.debug_mode:
+            start_time = datetime.fromtimestamp(self.current_data[0][0])
+            end_time = datetime.fromtimestamp(self.current_data[-1][0])
+            print(f"重新绘制K线范围：{start_time} 到 {end_time}")
         
         # 设置标题 - 添加全量数据的时间范围信息
         # 使用父组件中存储的完整时间范围信息
@@ -1145,8 +1270,8 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
             self.price_plot.setTitle(title_with_range, color='#ffffff', size='12pt')
         else:
             # 如果没有完整时间范围信息，使用当前数据的时间范围
-            all_start_time = start_time
-            all_end_time = end_time
+            all_start_time = datetime.fromtimestamp(self.current_data[0][0])
+            all_end_time = datetime.fromtimestamp(self.current_data[-1][0])
             duration = all_end_time - all_start_time
             title_with_range = f"{self.current_title} [{all_start_time.strftime('%Y-%m-%d')} 至 {all_end_time.strftime('%Y-%m-%d')}]"
             self.price_plot.setTitle(title_with_range, color='#ffffff', size='12pt')
@@ -1167,55 +1292,135 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         self.ts_to_index = dict(zip(timestamps, indices))
         self.index_to_ts = dict(zip(indices, timestamps))
         
+        # 获取当前视图范围
+        view_range = None
+        try:
+            if hasattr(self.price_plot, 'getViewBox'):
+                view_min_x, view_max_x = self.price_plot.getViewBox().viewRange()[0]
+                # 处理超出范围的情况
+                view_min_x = max(0, view_min_x)
+                view_max_x = min(len(indices) - 1, view_max_x)
+                view_range = (view_min_x, view_max_x)
+                # 只在debug模式下打印
+                if hasattr(self, 'debug_mode') and self.debug_mode:
+                    print(f"当前视图范围: {view_min_x:.1f} -> {view_max_x:.1f}")
+        except Exception as e:
+            print(f"获取视图范围出错: {e}")
+            # 默认显示最后30根K线
+            if len(indices) > 30:
+                view_range = (len(indices) - 30, len(indices) - 1)
+        
         # 生成新的K线数据 - 使用索引位置替代时间戳
         indexed_data = np.column_stack((indices, opens, highs, lows, closes, volumes))
         
         # 使用更高效的方式创建K线图元素
         try:
-            print(f"重新生成K线图元素，K线宽度：{self.bar_width}")
-            candlestick = CandlestickItem(indexed_data, self.bar_width)
-            self.price_plot.addItem(candlestick)
-            print("K线图元素添加成功")
+            # 只在debug模式下打印
+            if hasattr(self, 'debug_mode') and self.debug_mode:
+                print(f"重新生成K线图元素，K线宽度：{self.bar_width}")
+            self.candlestick_item = self.create_candlestick_item(indexed_data, self.bar_width, view_range)
+            # 减少不必要的输出
+            # print("K线图元素添加成功")
         except Exception as e:
             print(f"生成K线图元素失败: {e}")
         
-        # 创建成交量柱状图 - 分别绘制上涨和下跌的成交量
-        up_idx = closes > opens
-        down_idx = ~up_idx
-        
-        # 上涨成交量 (绿色)
-        if np.any(up_idx):
-            try:
-                up_indices = indices[up_idx]
-                up_volumes = volumes[up_idx] * 0.4
-                
-                up_volume_bar = pg.BarGraphItem(
-                    x=up_indices, 
-                    height=up_volumes, 
-                    width=self.bar_width, 
-                    brush='#26a69a'  # 绿色
-                )
-                self.volume_plot.addItem(up_volume_bar)
-                print(f"添加上涨成交量柱状图，共{np.sum(up_idx)}条")
-            except Exception as e:
-                print(f"添加上涨成交量失败: {e}")
-        
-        # 下跌成交量 (红色)
-        if np.any(down_idx):
-            try:
-                down_indices = indices[down_idx]
-                down_volumes = volumes[down_idx] * 0.4
-                
-                down_volume_bar = pg.BarGraphItem(
-                    x=down_indices, 
-                    height=down_volumes, 
-                    width=self.bar_width, 
-                    brush='#ef5350'  # 红色
-                )
-                self.volume_plot.addItem(down_volume_bar)
-                print(f"添加下跌成交量柱状图，共{np.sum(down_idx)}条")
-            except Exception as e:
-                print(f"添加下跌成交量失败: {e}")
+        # 如果有视图范围，根据视图范围筛选数据
+        if view_range is not None:
+            min_x, max_x = view_range
+            # 添加缓冲区
+            buffer = (max_x - min_x) * 0.5
+            min_x = max(0, int(min_x - buffer))
+            max_x = min(len(indices) - 1, int(max_x + buffer))
+            
+            # 筛选出在视图范围内的数据索引
+            visible_indices = np.where((indices >= min_x) & (indices <= max_x))[0]
+            # 只在debug模式下打印
+            if hasattr(self, 'debug_mode') and self.debug_mode:
+                print(f"优化成交量绘制: 只绘制视图范围内的柱形图，共 {len(visible_indices)} 条")
+            
+            # 筛选上涨和下跌数据
+            up_visible = np.intersect1d(np.where(closes > opens)[0], visible_indices)
+            down_visible = np.intersect1d(np.where(closes <= opens)[0], visible_indices)
+            
+            # 上涨成交量 (绿色)
+            if len(up_visible) > 0:
+                try:
+                    up_indices = indices[up_visible]
+                    up_volumes = volumes[up_visible] * 0.4
+                    
+                    up_volume_bar = pg.BarGraphItem(
+                        x=up_indices, 
+                        height=up_volumes, 
+                        width=self.bar_width, 
+                        brush='#26a69a'  # 绿色
+                    )
+                    self.volume_plot.addItem(up_volume_bar)
+                    # 只在debug模式下打印
+                    if hasattr(self, 'debug_mode') and self.debug_mode:
+                        print(f"添加上涨成交量柱状图，共{len(up_visible)}条")
+                except Exception as e:
+                    print(f"添加上涨成交量失败: {e}")
+            
+            # 下跌成交量 (红色)
+            if len(down_visible) > 0:
+                try:
+                    down_indices = indices[down_visible]
+                    down_volumes = volumes[down_visible] * 0.4
+                    
+                    down_volume_bar = pg.BarGraphItem(
+                        x=down_indices, 
+                        height=down_volumes, 
+                        width=self.bar_width, 
+                        brush='#ef5350'  # 红色
+                    )
+                    self.volume_plot.addItem(down_volume_bar)
+                    # 只在debug模式下打印
+                    if hasattr(self, 'debug_mode') and self.debug_mode:
+                        print(f"添加下跌成交量柱状图，共{len(down_visible)}条")
+                except Exception as e:
+                    print(f"添加下跌成交量失败: {e}")
+        else:
+            # 全量绘制成交量（不推荐用于大数据集）
+            up_idx = closes > opens
+            down_idx = ~up_idx
+            
+            # 上涨成交量 (绿色)
+            if np.any(up_idx):
+                try:
+                    up_indices = indices[up_idx]
+                    up_volumes = volumes[up_idx] * 0.4
+                    
+                    up_volume_bar = pg.BarGraphItem(
+                        x=up_indices, 
+                        height=up_volumes, 
+                        width=self.bar_width, 
+                        brush='#26a69a'  # 绿色
+                    )
+                    self.volume_plot.addItem(up_volume_bar)
+                    # 只在debug模式下打印
+                    if hasattr(self, 'debug_mode') and self.debug_mode:
+                        print(f"添加上涨成交量柱状图，共{np.sum(up_idx)}条")
+                except Exception as e:
+                    print(f"添加上涨成交量失败: {e}")
+            
+            # 下跌成交量 (红色)
+            if np.any(down_idx):
+                try:
+                    down_indices = indices[down_idx]
+                    down_volumes = volumes[down_idx] * 0.4
+                    
+                    down_volume_bar = pg.BarGraphItem(
+                        x=down_indices, 
+                        height=down_volumes, 
+                        width=self.bar_width, 
+                        brush='#ef5350'  # 红色
+                    )
+                    self.volume_plot.addItem(down_volume_bar)
+                    # 只在debug模式下打印
+                    if hasattr(self, 'debug_mode') and self.debug_mode:
+                        print(f"添加下跌成交量柱状图，共{np.sum(down_idx)}条")
+                except Exception as e:
+                    print(f"添加下跌成交量失败: {e}")
         
         # 创建自定义X轴刻度
         def tickStrings(values, scale, spacing):
@@ -1257,6 +1462,473 @@ class KlineGraphWidget(pg.GraphicsLayoutWidget):
         # 修改价格图和成交量图的X轴刻度函数
         self.price_plot.getAxis('bottom').tickStrings = tickStrings
         self.volume_plot.getAxis('bottom').tickStrings = tickStrings
+        
+        # 更新标记索引并重新渲染标记
+        if hasattr(self, 'trade_markers') and self.trade_markers:
+            # 延迟一小段时间再更新标记，确保K线图已完全绘制
+            QTimer.singleShot(100, self._delayed_update_markers)
+
+    def _delayed_update_markers(self):
+        """延迟更新标记点，确保K线图绘制完成后再添加标记"""
+        try:
+            print("执行延迟标记更新")
+            self.update_marker_indices()
+            
+            # 如果有当前视图范围，重新渲染标记
+            if hasattr(self.price_plot, 'getViewBox'):
+                view_min_x, view_max_x = self.price_plot.getViewBox().viewRange()[0]
+                self.render_visible_markers(view_min_x, view_max_x)
+        except Exception as e:
+            print(f"延迟更新标记点出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def clear_trades(self):
+        """清除所有交易标记"""
+        if hasattr(self, 'price_plot'):
+            # 移除所有标记图形项
+            for item in self.marker_items:
+                self.price_plot.removeItem(item)
+            
+            # 清空标记列表
+            self.marker_items = []
+            print("已清除所有交易标记")
+    
+    def add_trade_markers(self, markers):
+        """添加交易标记到K线图
+        
+        参数:
+            markers: 标记列表，每项应包含 time, price, type, text, color
+        """
+        if not hasattr(self, 'price_plot') or not markers:
+            print("【调试】未找到price_plot或markers为空，无法添加交易标记")
+            return
+            
+        # 存储所有标记信息，但不立即渲染
+        self.trade_markers = markers
+        print(f"\n【调试】收到 {len(markers)} 个交易标记")
+        
+        # 重置标记相关的缓存
+        if hasattr(self, 'last_visible_markers'):
+            delattr(self, 'last_visible_markers')
+        if hasattr(self, 'last_marker_view_range'):
+            delattr(self, 'last_marker_view_range')
+        if hasattr(self, 'last_visible_marker_count'):
+            delattr(self, 'last_visible_marker_count')
+        
+        # 计算所有标记的索引位置
+        self.update_marker_indices()
+        
+        # 获取当前视图范围
+        try:
+            view_min_x, view_max_x = self.price_plot.getViewBox().viewRange()[0]
+            
+            # 渲染在当前视图范围内的标记
+            self.render_visible_markers(view_min_x, view_max_x)
+            
+            # 添加视图范围变化的监听
+            if not hasattr(self, 'range_change_connected') or not self.range_change_connected:
+                self.price_plot.sigRangeChanged.connect(self.on_view_range_changed_for_markers)
+                self.range_change_connected = True
+                print("【调试】已连接标记视图范围变化事件")
+        except Exception as e:
+            print(f"【错误】处理标记时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def update_marker_indices(self):
+        """更新所有标记的索引位置"""
+        if not self.current_data or not self.trade_markers:
+            return
+            
+        # 获取当前数据的时间戳范围
+        current_timestamps = [item[0] for item in self.current_data]
+        min_ts = min(current_timestamps)
+        max_ts = max(current_timestamps)
+        
+        # 创建时间戳到索引的映射，提高查找效率
+        if not hasattr(self, 'ts_to_index') or not self.ts_to_index:
+            print("【警告】时间戳到索引的映射不存在，正在创建")
+            self.ts_to_index = {ts: idx for idx, ts in enumerate(current_timestamps)}
+        
+        # 更新标记的索引
+        updated_count = 0
+        for i, marker in enumerate(self.trade_markers):
+            marker_time = marker['time']
+            # 确保时间戳格式正确
+            if hasattr(marker_time, 'timestamp'):
+                marker_ts = marker_time.timestamp()
+            else:
+                marker_ts = marker_time
+            
+            # 检查是否在当前数据范围内
+            if min_ts <= marker_ts <= max_ts:
+                # 找到最接近的时间点索引
+                closest_ts = min(current_timestamps, key=lambda ts: abs(ts - marker_ts))
+                
+                # 使用映射快速获取索引
+                if closest_ts in self.ts_to_index:
+                    marker['index'] = self.ts_to_index[closest_ts]
+                    updated_count += 1
+                else:
+                    # 如果映射中没有，使用常规方法
+                    idx = min(range(len(current_timestamps)), key=lambda i: abs(current_timestamps[i] - marker_ts))
+                    marker['index'] = idx
+                    updated_count += 1
+            else:
+                # 标记不在当前时间范围内
+                marker['timestamp'] = marker_ts
+                marker['index'] = None
+        
+        print(f"【调试】更新了 {updated_count}/{len(self.trade_markers)} 个标记的索引")
+    
+    def on_view_range_changed_for_markers(self):
+        """当视图范围变化时，更新标记的显示"""
+        if not hasattr(self, 'trade_markers') or not self.trade_markers:
+            return
+            
+        try:
+            # 添加节流逻辑，避免频繁更新
+            current_time = time.time()
+            if hasattr(self, 'last_marker_update_time') and current_time - self.last_marker_update_time < 0.2:  # 从0.1增加到0.2秒
+                return
+            self.last_marker_update_time = current_time
+            
+            # 获取当前视图范围
+            view_range = self.price_plot.getViewBox().viewRange()
+            view_min_x, view_max_x = view_range[0]
+            
+            # 检查视图变化幅度，如果变化很小则不更新 - 新增优化
+            if hasattr(self, 'last_view_range'):
+                last_min, last_max = self.last_view_range
+                # 计算视图范围变化百分比
+                view_width = view_max_x - view_min_x
+                min_change_percent = abs(last_min - view_min_x) / view_width if view_width > 0 else 0
+                max_change_percent = abs(last_max - view_max_x) / view_width if view_width > 0 else 0
+                
+                # 如果变化小于5%，不触发更新
+                if min_change_percent < 0.05 and max_change_percent < 0.05:
+                    return
+            
+            # 记录当前视图范围，用于下次比较
+            self.last_view_range = (view_min_x, view_max_x)
+            
+            # 在视图变化后检查是否需要更新标记索引
+            if hasattr(self, 'last_data_update_time') and self.last_data_update_time > self.last_marker_update_time:
+                print("【调试】数据已更新，重新计算标记索引")
+                self.update_marker_indices()
+            
+            # 渲染在当前视图范围内的标记
+            self.render_visible_markers(view_min_x, view_max_x)
+        except Exception as e:
+            print(f"【错误】更新标记时出错: {str(e)}")
+    
+    def render_visible_markers(self, view_min_x, view_max_x):
+        """渲染在视图范围内的标记
+        
+        参数:
+            view_min_x: 视图最小X坐标
+            view_max_x: 视图最大X坐标
+        """
+        if not hasattr(self, 'trade_markers') or not self.trade_markers:
+            return
+            
+        # 记录最后渲染标记的时间
+        self.last_marker_render_time = time.time()
+        
+        # 添加一些缓冲区，让刚超出视图的标记也能看到
+        buffer = (view_max_x - view_min_x) * 0.2  # 增加缓冲区为20%
+        extended_min_x = max(0, view_min_x - buffer)
+        extended_max_x = view_max_x + buffer
+        
+        # 增加一个视图范围检查，避免不必要的重绘 - 新增优化
+        if hasattr(self, 'last_marker_view_range'):
+            last_min, last_max = self.last_marker_view_range
+            # 如果视图范围变化很小，且已经有渲染的标记，则不重新渲染
+            if (abs(last_min - extended_min_x) < 1 and 
+                abs(last_max - extended_max_x) < 1 and 
+                len(self.marker_items) > 0):
+                return
+        
+        # 记录当前扩展后的视图范围
+        self.last_marker_view_range = (extended_min_x, extended_max_x)
+        
+        # 找出在当前视图范围内的标记
+        visible_markers = []
+        for marker in self.trade_markers:
+            if 'index' in marker and marker['index'] is not None:
+                x_pos = marker['index']
+                if extended_min_x <= x_pos <= extended_max_x:
+                    visible_markers.append(marker)
+                # 调试信息 - 减少打印频率，只在debug模式下打印
+                # elif abs(x_pos - extended_min_x) < 20 or abs(x_pos - extended_max_x) < 20:
+                #     print(f"【调试】标记在视图附近但不可见: 位置={x_pos}, 类型={marker['type']}, 文本={marker['text']}")
+        
+        # 仅在标记数量变化时打印，减少console刷新带来的性能开销
+        if not hasattr(self, 'last_visible_marker_count') or self.last_visible_marker_count != len(visible_markers):
+            print(f"【调试】当前视图范围 {extended_min_x:.1f} -> {extended_max_x:.1f} 内有 {len(visible_markers)} 个标记")
+            self.last_visible_marker_count = len(visible_markers)
+        
+        # 如果可视范围内没有标记，且当前没有显示的标记，则直接返回
+        if not visible_markers and not self.marker_items:
+            return
+            
+        # 如果可视范围内没有标记，但当前有显示的标记，则清除标记
+        if not visible_markers and self.marker_items:
+            self.clear_trades()
+            return
+        
+        # 增加标记比较逻辑，避免重复渲染相同的标记 - 新增优化
+        if hasattr(self, 'last_visible_markers'):
+            # 检查当前可见标记是否与上次相同
+            if self._are_markers_same(visible_markers, self.last_visible_markers):
+                return  # 如果标记没有变化，则不重新渲染
+        
+        # 记录当前可见标记，用于下次比较
+        self.last_visible_markers = copy.deepcopy(visible_markers)
+        
+        # 清除现有标记
+        self.clear_trades()
+        
+        # 找出每个K线对应的价格数据，用于定位低点和高点
+        if self.current_data and len(self.current_data) > 0:
+            # 创建索引到价格数据的映射
+            kline_data = {}
+            for i, kline in enumerate(self.current_data):
+                # 格式: [timestamp, open, high, low, close, volume]
+                kline_data[i] = {
+                    'high': kline[2],
+                    'low': kline[3]
+                }
+        
+        # 将标记添加到图表
+        added_count = 0
+        for i, marker in enumerate(visible_markers):
+            # 获取标记信息
+            marker_price = marker['price']
+            marker_type = marker['type']
+            marker_text = marker['text']
+            marker_color = marker['color']
+            x_pos = marker['index']
+            
+            # 根据标记类型调整位置和样式
+            if marker_type == 'buy':
+                # 买入标记，使用向上箭头，放在low位置
+                symbol = 'arrow_up'  # 向上箭头
+                # 使用传入的颜色，而不是固定为绿色
+                brush = pg.mkBrush(marker_color)  
+                text_color = marker_color  # 文字也使用相同颜色
+                # 尝试将箭头放在K线低点
+                if x_pos in kline_data:
+                    # 使用K线的low位置减去一点间距
+                    marker_price = kline_data[x_pos]['low'] - (kline_data[x_pos]['high'] - kline_data[x_pos]['low']) * 0.05
+            else:
+                # 卖出标记，使用向下箭头，放在high位置
+                symbol = 'arrow_down'  # 向下箭头
+                # 使用传入的颜色，而不是固定为红色
+                brush = pg.mkBrush(marker_color)  
+                text_color = marker_color  # 文字也使用相同颜色
+                # 尝试将箭头放在K线高点
+                if x_pos in kline_data:
+                    # 使用K线的high位置加上一点间距
+                    marker_price = kline_data[x_pos]['high'] + (kline_data[x_pos]['high'] - kline_data[x_pos]['low']) * 0.05
+            
+            # 减少不必要的打印
+            # print(f"【调试】添加标记: 位置=({x_pos}, {marker_price}), 类型={marker_type}, 文本={marker_text}")
+            
+            # 创建箭头标记
+            scatter = pg.ScatterPlotItem()
+            # 设置箭头大小、颜色和线条
+            scatter.addPoints([x_pos], [marker_price], symbol=symbol, 
+                            size=15, pen=pg.mkPen('w', width=1.5), brush=brush)
+            
+            # 创建文本项，显示交易信息
+            # 根据标记类型调整文本位置
+            if marker_type == 'buy':
+                # 买入标记文本显示在箭头下方（尾部）
+                anchor = (0.5, 0.0)  # 下边中心对齐
+                text_y = marker_price - (kline_data[x_pos]['high'] - kline_data[x_pos]['low']) * 0.1 if x_pos in kline_data else marker_price - 5
+            else:
+                # 卖出标记文本显示在箭头上方（尾部）
+                anchor = (0.5, 1.0)  # 上边中心对齐
+                text_y = marker_price + (kline_data[x_pos]['high'] - kline_data[x_pos]['low']) * 0.1 if x_pos in kline_data else marker_price + 5
+                
+            text = pg.TextItem(marker_text, color=text_color, anchor=anchor)
+            text.setPos(x_pos, text_y)
+            
+            # 添加到图表
+            self.price_plot.addItem(scatter)
+            self.price_plot.addItem(text)
+            
+            # 将图形项存储在列表中，以便后续清除
+            self.marker_items.extend([scatter, text])
+            added_count += 1
+        
+        if added_count > 0:
+            # 优化：减少不必要的信号发送
+            # 只有当确实添加了标记时才发送更新信号，且添加简单节流
+            current_time = time.time()
+            if (not hasattr(self, 'last_signal_time') or 
+                current_time - self.last_signal_time > 0.5):  # 至少0.5秒发送一次信号
+                self.last_signal_time = current_time
+                # 发送更新信号 - 仅用于必要的UI更新，不触发重绘
+                if hasattr(self, 'kline_updated'):
+                    self.kline_updated.emit()
+    
+    def _are_markers_same(self, markers1, markers2):
+        """比较两组标记是否相同
+        
+        参数:
+            markers1: 第一组标记
+            markers2: 第二组标记
+            
+        返回:
+            bool: 两组标记是否相同
+        """
+        if len(markers1) != len(markers2):
+            return False
+            
+        # 比较每个标记的关键属性
+        for i in range(len(markers1)):
+            m1 = markers1[i]
+            m2 = markers2[i]
+            
+            # 比较索引位置和类型
+            if m1['index'] != m2['index'] or m1['type'] != m2['type']:
+                return False
+                
+        return True
+    
+    def _time_to_index(self, timestamp):
+        """将时间戳转换为当前数据中的索引位置
+        
+        参数:
+            timestamp: 日期时间或时间戳
+            
+        返回:
+            int: 对应的索引位置，如果不在范围内则返回None
+        """
+        if not self.current_data:
+            return None
+            
+        # 确保timestamp是时间戳格式
+        if hasattr(timestamp, 'timestamp'):
+            ts = timestamp.timestamp()  # 转换datetime为时间戳
+        else:
+            ts = timestamp
+            
+        # 使用二分查找找到最近的时间点
+        timestamps = [item[0] for item in self.current_data]
+        
+        # 检查是否在范围内
+        if ts < timestamps[0] or ts > timestamps[-1]:
+            # 不在当前数据范围内
+            return None
+            
+        # 找到最接近的索引
+        idx = min(range(len(timestamps)), key=lambda i: abs(timestamps[i] - ts))
+        return idx
+        
+    def add_indicator(self, data, name='indicator', color=(255, 255, 255), overlay=False):
+        """添加指标到K线图
+        
+        参数:
+            data: 指标数据，应为带有时间索引的Series或DataFrame
+            name: 指标名称
+            color: 线条颜色，RGB元组
+            overlay: 是否叠加在K线上，False则创建新的子图
+        """
+        if data is None or data.empty:
+            print(f"没有数据可以添加指标: {name}")
+            return
+            
+        try:
+            # 确保索引是日期时间类型
+            if not isinstance(data.index, pd.DatetimeIndex):
+                print(f"错误: 指标数据 {name} 的索引不是日期时间类型")
+                return
+            
+            # 先清除子图中可能存在的旧指标
+            if not overlay and hasattr(self, 'indicator_plots'):
+                for plot in self.indicator_plots:
+                    self.removeItem(plot)
+                self.indicator_plots = []
+            
+            # 如果是第一次添加指标，初始化指标图列表
+            if not hasattr(self, 'indicator_plots'):
+                self.indicator_plots = []
+                
+            # 转换为列表，便于处理
+            timestamps = [ts.timestamp() for ts in data.index]
+            values = data.values
+            
+            # 创建索引和值的列表
+            indices = []
+            filtered_values = []
+            
+            # 只保留在当前视图中的点
+            for ts, val in zip(timestamps, values):
+                idx = self._time_to_index(ts)
+                if idx is not None:
+                    indices.append(idx)
+                    filtered_values.append(val)
+            
+            if not indices:
+                if hasattr(self, 'debug_mode') and self.debug_mode:
+                    print(f"警告: 指标 {name} 的所有点都不在当前视图中")
+                return
+                
+            # 创建指标曲线
+            pen = pg.mkPen(color=color, width=2)
+            
+            if overlay:
+                # 叠加在K线图上
+                plot_item = self.price_plot.plot(indices, filtered_values, name=name, pen=pen)
+            else:
+                # 创建新的子图
+                indicator_plot = self.addPlot(row=2, col=0)
+                indicator_plot.setLabel('left', name)
+                indicator_plot.showGrid(x=True, y=True, alpha=0.3)
+                
+                # 连接X轴范围，使指标图和价格图的X轴同步
+                indicator_plot.setXLink(self.price_plot)
+                
+                # 添加指标曲线
+                plot_item = indicator_plot.plot(indices, filtered_values, name=name, pen=pen)
+                
+                # 存储指标图，以便后续清除
+                self.indicator_plots.append(indicator_plot)
+                
+            if hasattr(self, 'debug_mode') and self.debug_mode:
+                print(f"成功添加指标: {name}, 点数: {len(indices)}")
+            
+        except Exception as e:
+            print(f"添加指标 {name} 时出错: {str(e)}")
+            if hasattr(self, 'debug_mode') and self.debug_mode:
+                import traceback
+                traceback.print_exc()
+
+    def create_candlestick_item(self, data, width, view_range=None):
+        """创建K线图项
+        
+        参数:
+            data: 索引化的K线数据
+            width: K线宽度
+            view_range: 视图范围 (min_x, max_x)
+            
+        返回:
+            CandlestickItem: K线图项
+        """
+        try:
+            # 使用优化的绘制方式，只绘制可视范围内的K线
+            candlestick = CandlestickItem(data, width, view_range)
+            self.price_plot.addItem(candlestick)
+            return candlestick
+        except Exception as e:
+            print(f"生成K线图元素失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 class KlineViewWidget(QWidget):
     """K线图显示组件"""
@@ -1773,11 +2445,14 @@ class KlineViewWidget(QWidget):
         
         Args:
             qt_date: PyQt6日期对象
+            
+        Returns:
+            bool: 跳转是否成功
         """
         # 首先确保有数据可供查看
         if not self.kline_view.full_data:
             print("没有可用数据进行跳转")
-            return
+            return False
         
         # 将Qt日期转换为Python日期
         selected_date = qt_date.toPyDate()
@@ -1828,11 +2503,11 @@ class KlineViewWidget(QWidget):
             # 更新当前数据以覆盖目标窗口
             self.kline_view.current_data = full_data[start_idx:end_idx + 1]
             
-            # 重新绘制K线图
-            self.plot_current_data()
+            # 重新绘制K线图 - 修正方法调用错误
+            self.kline_view.plot_current_data()
             
-            # 设置新的显示范围（使用平滑动画）
-            self.setXRangeWithAnimation(0, len(self.current_data))
+            # 确保视图范围正确设置 - 显示完整数据范围
+            self.kline_view.price_plot.setXRange(0, len(self.kline_view.current_data)-1, padding=0.1)
             
             # 更新时间偏移
             if closest_idx < len(full_data) - 1:
@@ -1840,8 +2515,16 @@ class KlineViewWidget(QWidget):
             else:
                 self.kline_view.time_offset = 0
             
-            print(f"设置显示范围: 0 -> {len(self.current_data)-1}，时间偏移: {self.kline_view.time_offset}")
+            print(f"设置显示范围: 0 -> {len(self.kline_view.current_data)-1}，时间偏移: {self.kline_view.time_offset}")
             
+            # 更新信息显示
+            self.update_position_label()
+            self.update_date_range_label()
+            
+            # 刷新视图
+            self.kline_view.kline_updated.emit()
+            
+            return True
         else:
             # 目标日期不在当前加载数据范围内，需要加载新数据
             print("目标日期不在当前加载的数据范围内，尝试加载包含该日期的数据")
@@ -1876,16 +2559,25 @@ class KlineViewWidget(QWidget):
                     # 更新当前显示数据
                     self.kline_view.current_data = new_data[start_idx:end_idx + 1]
                     
-                    # 重新绘制K线图
+                    # 重新绘制K线图 - 修正方法调用错误
                     title = f"{self.current_symbol} {INTERVAL_DISPLAY.get(self.current_interval, self.current_interval)} - {selected_date}"
                     self.kline_view.current_title = title
                     self.kline_view.plot_current_data()
                     
-                    # 设置新的显示范围（使用平滑动画）
-                    self.setXRangeWithAnimation(0, len(self.current_data))
+                    # 设置新的显示范围（使用平滑动画）- 修正方法调用错误
+                    self.kline_view.price_plot.setXRange(0, len(self.kline_view.current_data)-1, padding=0.1)
                     
                     # 更新最新价格信息
                     self.update_price_info(new_data[closest_idx])
+                
+                    # 更新信息显示
+                    self.update_position_label()
+                    self.update_date_range_label()
+                    
+                    # 刷新视图
+                    self.kline_view.kline_updated.emit()
+                    
+                    return True
                 else:
                     print(f"警告：加载的新数据不包含目标日期 {selected_date}")
                     QMessageBox.warning(self, "日期跳转", f"未找到包含 {selected_date} 的数据")
@@ -1893,12 +2585,7 @@ class KlineViewWidget(QWidget):
                 print(f"无法加载包含日期 {selected_date} 的数据")
                 QMessageBox.warning(self, "日期跳转", f"未找到包含 {selected_date} 的数据")
         
-        # 更新信息显示
-        self.update_position_label()
-        self.update_date_range_label()
-        
-        # 刷新视图
-        self.kline_view.kline_updated.emit()
+        return False
     
     def update_width_label(self):
         """更新K线宽度标签"""
@@ -1917,6 +2604,293 @@ class KlineViewWidget(QWidget):
                 zoom_state = "正常"
                 
             self.width_label.setText(f"K线缩放: {zoom_state} ({view_width:.0f}根)")
+    
+    def get_full_kline_data(self):
+        """获取当前已加载的全量K线数据，提供给其他组件使用
+        
+        返回:
+            pd.DataFrame: 包含完整K线数据的DataFrame，或None如果没有数据
+        """
+        if not hasattr(self, 'current_symbol') or not hasattr(self, 'current_interval'):
+            print("未设置当前交易对或时间周期")
+            return None
+            
+        # 获取当前加载的数据
+        symbol = self.current_symbol
+        interval = self.current_interval
+        key = f"{symbol}_{interval}"
+        
+        if key not in self.loaded_data or not self.loaded_data[key]:
+            print(f"未找到已加载的数据: {key}")
+            return None
+            
+        # 将数据转换为DataFrame格式
+        data_list = self.loaded_data[key]
+        if not data_list:
+            return None
+            
+        # 创建DataFrame
+        df = pd.DataFrame(data_list, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        # 转换时间戳为datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+        
+        # 设置索引
+        df.set_index('timestamp', inplace=True)
+        
+        # 排序以确保时间顺序
+        df.sort_index(inplace=True)
+        
+        print(f"提供全量K线数据: {len(df)} 条记录，时间范围: {df.index[0]} 到 {df.index[-1]}")
+        return df
+    
+    def add_trades_from_strategy(self, strategy):
+        """从因子策略添加交易记录到K线图
+        
+        参数:
+            strategy: FactorTradingStrategy实例，包含回测结果和交易记录
+        """
+        if not hasattr(self, 'kline_view') or not strategy:
+            print("【错误】kline_view对象不存在或strategy为空")
+            return
+            
+        try:
+            print("\n===== 开始添加交易记录到K线图 =====")
+            
+            # 清除现有的交易标记
+            self.kline_view.clear_trades()
+            
+            # 获取策略的交易记录
+            trades = strategy.trades
+            if not trades:
+                print("【调试】策略没有交易记录，退出")
+                return
+                
+            print(f"【调试】策略共有 {len(trades)} 笔交易记录")
+            
+            # 输出几笔交易的详情作为示例
+            if self.kline_view.debug_mode:
+                for i, trade in enumerate(trades[:3]):  # 最多显示前3笔
+                    entry_time = trade['entry_time']
+                    exit_time = trade['exit_time']
+                    position = trade['position']
+                    print(f"【调试】交易 #{i}: 方向={'多' if position > 0 else '空'}, 入场={entry_time}, 出场={exit_time}")
+            
+            # 检查是否需要加载特定时间段的数据
+            # 首先获取交易的时间范围
+            trade_times = []
+            for trade in trades:
+                trade_times.append(trade['entry_time'].timestamp() if hasattr(trade['entry_time'], 'timestamp') else trade['entry_time'])
+                trade_times.append(trade['exit_time'].timestamp() if hasattr(trade['exit_time'], 'timestamp') else trade['exit_time'])
+                
+            if trade_times:
+                # 获取交易的时间范围
+                earliest_trade_time = min(trade_times)
+                latest_trade_time = max(trade_times)
+                
+                # 将时间戳转换为datetime对象以便于显示
+                earliest_date = datetime.fromtimestamp(earliest_trade_time)
+                latest_date = datetime.fromtimestamp(latest_trade_time)
+                
+                print(f"【调试】交易时间范围: {earliest_date} 至 {latest_date}")
+                
+                # 检查当前显示的数据是否包含这些交易
+                current_data_range = None
+                if hasattr(self.kline_view, 'current_data') and self.kline_view.current_data:
+                    current_start = self.kline_view.current_data[0][0]
+                    current_end = self.kline_view.current_data[-1][0]
+                    current_data_range = (current_start, current_end)
+                    if self.kline_view.debug_mode:
+                        print(f"【调试】当前数据范围: {datetime.fromtimestamp(current_start)} 至 {datetime.fromtimestamp(current_end)}")
+                else:
+                    print("【调试】当前没有加载数据")
+                
+                # 如果当前数据不包含交易时间范围，需要跳转到交易时间段
+                need_to_jump = False
+                if not current_data_range:
+                    need_to_jump = True
+                    print("【调试】当前没有数据，需要跳转到交易时间段")
+                elif earliest_trade_time < current_data_range[0] or latest_trade_time > current_data_range[1]:
+                    need_to_jump = True
+                    print("【调试】当前数据范围不包含交易时间范围，需要跳转")
+                
+                if need_to_jump:
+                    # 获取跳转日期（使用最早交易的日期）
+                    jump_date = earliest_date.date()
+                    
+                    # 创建QDate对象
+                    from PyQt6.QtCore import QDate
+                    qt_date = QDate(jump_date.year, jump_date.month, jump_date.day)
+                    
+                    # 跳转到包含最早交易的日期
+                    print(f"【调试】跳转到日期: {jump_date}")
+                    result = self.jump_to_date(qt_date)
+                    
+                    # 确保等待数据加载完成
+                    QApplication.processEvents()
+                    
+                    # 如果跳转失败，尝试跳转到回测数据的中间时间点
+                    if not result:
+                        print("【警告】跳转到最早交易日期失败，尝试跳转到回测期间中间日期")
+                        middle_ts = (earliest_trade_time + latest_trade_time) / 2
+                        middle_date = datetime.fromtimestamp(middle_ts).date()
+                        qt_middle_date = QDate(middle_date.year, middle_date.month, middle_date.day)
+                        
+                        # 尝试跳转到中间日期
+                        self.jump_to_date(qt_middle_date)
+                        QApplication.processEvents()
+                        
+                    # 增加一个额外的检查：确保交易标记在视图中可见
+                    self.ensure_trades_visible(trades)
+            
+            # 将策略交易转换为K线图可用的格式
+            trade_markers = []
+            for trade in trades:
+                # 获取交易方向（做多/做空）
+                position = trade['position']
+                
+                # 确定交易颜色 - 做多用绿色，做空用红色
+                trade_color = 'green' if position > 0 else 'red'
+                
+                # 入场标记
+                entry_time = trade['entry_time']
+                entry_price = trade['entry_price']
+                shares = trade['shares']
+                
+                # 确定入场标记类型和文本
+                entry_marker = {
+                    'time': entry_time,
+                    'price': entry_price,
+                    'type': 'buy' if position > 0 else 'sell',
+                    'text': f"{'买' if position > 0 else '卖'} {shares:.4f}",
+                    'color': trade_color  # 使用基于交易方向的颜色
+                }
+                trade_markers.append(entry_marker)
+                
+                # 出场标记
+                exit_time = trade['exit_time']
+                exit_price = trade['exit_price']
+                pnl = trade['net_pnl']
+                
+                # 确定出场标记类型和文本
+                exit_marker = {
+                    'time': exit_time,
+                    'price': exit_price,
+                    'type': 'sell' if position > 0 else 'buy',
+                    'text': f"{'卖' if position > 0 else '买'} {shares:.4f} ({pnl:.2f})",
+                    'color': trade_color  # 使用基于交易方向的颜色，而非基于盈亏
+                }
+                trade_markers.append(exit_marker)
+            
+            if self.kline_view.debug_mode:
+                print(f"【调试】创建了 {len(trade_markers)} 个交易标记")
+            
+            # 将交易添加到K线图
+            print("【调试】添加交易标记...")
+            self.kline_view.add_trade_markers(trade_markers)
+            
+            # 添加因子值曲线 - 这个方法会触发重绘
+            self.add_factor_values(strategy)
+            
+            # 不需要再次调用plot_current_data，因为上面的操作已经触发了重绘
+            # self.kline_view.plot_current_data()
+            
+            print("【调试】交易记录添加完成")
+        except Exception as e:
+            print(f"【错误】添加交易记录时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def ensure_trades_visible(self, trades):
+        """确保交易记录在当前视图中可见
+        
+        参数:
+            trades: 交易记录列表
+        """
+        if not hasattr(self.kline_view, 'current_data') or not self.kline_view.current_data or not trades:
+            return False
+            
+        try:
+            # 获取交易时间范围
+            trade_times = []
+            for trade in trades:
+                trade_times.append(trade['entry_time'].timestamp() if hasattr(trade['entry_time'], 'timestamp') else trade['entry_time'])
+                trade_times.append(trade['exit_time'].timestamp() if hasattr(trade['exit_time'], 'timestamp') else trade['exit_time'])
+                
+            if not trade_times:
+                return False
+                
+            # 计算交易时间范围
+            earliest_ts = min(trade_times)
+            latest_ts = max(trade_times)
+            
+            # 获取当前数据时间范围
+            current_data = self.kline_view.current_data
+            current_start_ts = current_data[0][0]
+            current_end_ts = current_data[-1][0]
+            
+            # 检查交易时间是否在当前数据范围内
+            if earliest_ts >= current_start_ts and latest_ts <= current_end_ts:
+                # 找到交易对应的索引
+                start_idx = self.kline_view._time_to_index(earliest_ts)
+                end_idx = self.kline_view._time_to_index(latest_ts)
+                
+                if start_idx is not None and end_idx is not None:
+                    # 添加一些缓冲区，确保所有交易都可见
+                    buffer = max(10, int((end_idx - start_idx) * 0.2))  # 至少10个点或20%
+                    view_min = max(0, start_idx - buffer)
+                    view_max = min(len(current_data) - 1, end_idx + buffer)
+                    
+                    print(f"【调试】设置视图范围确保交易可见: {view_min} -> {view_max}")
+                    
+                    # 设置视图范围
+                    self.kline_view.price_plot.setXRange(view_min, view_max, padding=0.05)
+                    return True
+            
+            print("【警告】无法使交易在当前视图中可见，交易时间超出当前数据范围")
+            return False
+        except Exception as e:
+            print(f"【错误】确保交易可见时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def add_factor_values(self, strategy):
+        """添加因子值曲线到副图
+        
+        参数:
+            strategy: FactorTradingStrategy实例
+        """
+        try:
+            if not hasattr(strategy, 'backtest_result') or strategy.backtest_result is None:
+                return
+                
+            # 获取策略的因子值
+            if hasattr(strategy, 'factor_values') and strategy.factor_values is not None:
+                factor_values = strategy.factor_values
+                factor_name = getattr(strategy, 'factor_expression', '因子')
+                
+                # 确保factor_values有时间索引
+                if not isinstance(factor_values.index, pd.DatetimeIndex):
+                    return
+                
+                # 仅在debug模式下输出
+                if hasattr(self.kline_view, 'debug_mode') and self.kline_view.debug_mode:
+                    print(f"【调试】添加因子曲线: {factor_name}, 数据点: {len(factor_values)}")
+                    
+                # 将因子值添加到副图
+                self.kline_view.add_indicator(
+                    factor_values, 
+                    name=factor_name, 
+                    color=(0, 120, 255),
+                    overlay=False
+                )
+                
+        except Exception as e:
+            print(f"添加因子值曲线出错: {str(e)}")
+            if hasattr(self.kline_view, 'debug_mode') and self.kline_view.debug_mode:
+                import traceback
+                traceback.print_exc()
 
 # 自定义Y轴，支持鼠标拖动缩放
 class PriceYAxisItem(pg.AxisItem):

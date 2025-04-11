@@ -1,16 +1,83 @@
-# ETH 量化交易系统
+# ETH智能交易系统
 
-## 项目简介
-这是一个基于遗传算法的 ETH 量化交易系统，使用符号回归方法挖掘交易因子。
+基于因子挖掘的ETH加密货币交易系统。
 
 ## 主要功能
-- 数据获取：自动下载历史K线数据
-- 因子挖掘：使用遗传算法进行因子挖掘
-- 参数优化：网格搜索优化算法参数
-- 多进程支持：并行执行参数搜索
-- 结果分析：自动生成分析报告
-- 进度监控UI：可视化显示挖掘进度和内存占用
-- 内存优化：自动管理进程内存，防止内存泄漏
+
+- 数据获取：从Binance获取历史K线数据
+- 因子挖掘：使用遗传算法自动挖掘有效交易因子
+- 回测系统：评估交易策略的历史表现
+- 实时交易：接入Binance API进行自动化交易
+- 多因子类型支持：包括量价获利因子、支撑阻力因子、趋势动能因子、波动率因子、流动性因子等
+
+## 因子类型
+
+系统当前支持以下几种因子类型：
+
+1. **量价获利因子**：结合价格和交易量特征，挖掘市场获利机会。
+2. **支撑阻力因子**：识别重要价格水平，捕捉价格反转和突破时机。特征包括：
+   - 历史高低点位
+   - 斐波那契回撤水平
+   - 布林带作为动态支撑阻力
+   - 价格突破模式
+   - 价格形态识别
+3. **趋势动能因子**：识别价格趋势的方向和强度，捕捉趋势行情。
+4. **波动率因子**：基于价格波动特征，适合在剧烈波动环境中交易。
+5. **流动性因子**：关注交易量和流动性变化，识别大资金进出市场的信号。
+
+## 使用示例
+
+### 挖掘支撑阻力因子并回测
+
+```python
+# 导入必要库
+from crypto_trader import mine_new_factors, backtest_strategy
+from data_processors.binance_processor import load_historical_data
+
+# 加载数据
+df = load_historical_data(symbol="ETHUSDT", interval="1h", start_date="2023-01-01")
+
+# 挖掘支撑阻力因子
+support_resistance_factors = mine_new_factors(
+    data=df,
+    factor_type="支撑阻力因子",  # 指定因子类型
+    forward_period=24,  # 24小时预测期
+    n_best=3  # 返回前3个最佳因子
+)
+
+# 查看挖掘结果
+for i, factor in enumerate(support_resistance_factors):
+    print(f"{i+1}. 表达式: {factor['expression']}")
+    print(f"   IC: {factor['ic']:.4f}, Sharpe: {factor['sharpe']:.4f}")
+```
+
+更多详细示例请参考 `examples/` 目录下的示例代码。
+
+## 安装
+
+1. 克隆代码库:
+```
+git clone https://github.com/yourusername/eth_trader.git
+cd eth_trader
+```
+
+2. 安装依赖:
+```
+pip install -r requirements.txt
+```
+
+## 配置
+
+在 `config/` 目录下创建 `api_config.json` 文件，添加您的Binance API密钥：
+
+```json
+{
+    "binance": {
+        "api_key": "YOUR_API_KEY",
+        "api_secret": "YOUR_API_SECRET"
+    }
+}
+```
 
 ## 项目结构
 ```
@@ -134,6 +201,20 @@ python scripts/run_grid_search_ui.py
   - 增强数据处理过程中的异常检查
   - 改进防御性编程实践，提高代码鲁棒性
   - 优化错误处理机制，减少程序崩溃可能性
+- v0.3.4 (2025-03-28 22:30:15)
+  - 重构K线图交易标记渲染机制，显著提升性能
+  - 修复回测后K线图卡顿问题，优化交互体验
+  - 实现增量渲染和视图变化检测，减少不必要的重绘
+  - 添加调试模式控制，优化日志输出和资源使用
+  - 新增交易标记可见性保证功能，确保标记在视图中可见
+- v0.3.5 (2025-03-28 23:15:00)
+  - 全面优化交易系统核心组件
+  - 实现固定交易金额机制（100）
+  - 增强风险控制（15%最大回撤限制）
+  - 优化DQN网络结构（4层）
+  - 改进奖励系统和交易频率控制
+  - 修正交易费率为0.05%
+  - 提升系统整体稳定性和性能
 
 ## 系统架构
 系统分为以下主要模块：
