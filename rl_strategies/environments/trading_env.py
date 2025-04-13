@@ -248,6 +248,7 @@ class TradingEnv(gym.Env):
         self.done = False
         self.truncated = False
         self.entry_price = 0  # 入场价格
+        self.cumulative_reward = 0  # 重置累计奖励值
         
         # 设置初始价格，用于买入持有策略计算
         self.initial_price = self.df.iloc[self.current_step]['close']
@@ -354,6 +355,11 @@ class TradingEnv(gym.Env):
         self.episode_step_count += 1
         step_count = self.episode_step_count  # 从1开始计数，更直观
         
+        # 初始化变量
+        done = False
+        truncated = False
+        early_stop = False  # 修复：初始化early_stop变量
+        
         # 检查是否有持仓，如果没有持仓且动作为卖出，则改为持有
         original_action = action
         if action == 0 and self.position <= 0:
@@ -408,18 +414,9 @@ class TradingEnv(gym.Env):
         # 计算奖励
         reward = self._calculate_reward(previous_portfolio_value, current_portfolio_value, action)
         
-
-        
-        # 检查回合是否结束 - 关键部分！
-        done = False
-        truncated = False
-        early_stop = False
-        
         # *** 强制环境不在前400步结束 ***
         # 这是为了确保每个回合至少执行400步训练
         force_continue = step_count < 400
-        
-
         
         # 提前停止条件检查 - 修改为使用truncated而不是done来处理提前停止
         # 只有在不强制继续的情况下才检查提前停止条件
@@ -427,8 +424,6 @@ class TradingEnv(gym.Env):
             # 提前停止条件：如果总资产低于初始资产的门限值
             # 更新计算方式，确保正确计算损失率
             current_loss_pct = (self.initial_balance - current_portfolio_value) / self.initial_balance
-            
-
             
             if current_loss_pct > self.early_stop_loss_threshold:
                 # 添加随机因素，避免总是在特定步数停止
@@ -499,8 +494,100 @@ class TradingEnv(gym.Env):
         transaction_amount = 0
         transaction_reason = ""
         
+        print(f"\n====== 执行交易动作 {action} ======")
+        print(f"当前步数: {self.current_step}")
+        print(f"当前价格: {current_price}")
+        print(f"当前持仓: {self.position}")
+        print(f"当前余额: {self.balance}")
+        
+        # 卖出操作
+        if action == 0:
+            print("\n----- 尝试执行卖出操作 -----")
+            if self.position > 0:  # 有持仓才能卖出
+                old_position = self.position
+                
+                # 计算卖出价值（扣除手续费），使用8位小数，避免精度损失
+                sell_amount = round(self.position * current_price, 8)  # 先计算卖出金额
+                sell_fee = round(sell_amount * self.transaction_fee, 8)  # 计算手续费
+                if sell_fee == 0 and self.transaction_fee > 0:  # 如果手续费被四舍五入为0，但费率不为0
+                    sell_fee = round(sell_amount * self.transaction_fee, 10)  # 使用更高精度
+                sell_value = round(sell_amount - sell_fee, 8)  # 实际卖出价值为卖出金额减去手续费
+                
+                print(f"卖出计算详情:")
+                print(f"- 卖出数量: {old_position}")
+                print(f"- 卖出金额(未扣费): {sell_amount}")
+                print(f"- 手续费: {sell_fee}")
+                print(f"- 实际收入: {sell_value}")
+                
+                # 更新手续费总额
+                self.fees_paid = round(self.fees_paid + sell_fee, 8)
+                
+                # 计算利润（使用持仓均价）
+                if self.avg_entry_price > 0:
+                    # 计算买入成本（基于持仓均价，包含手续费）
+                    buy_cost = round(self.position * self.avg_entry_price, 8)
+                    # 计算实际利润
+                    total_profit = round(sell_value - buy_cost, 8)
+                    profit_pct = round(total_profit / buy_cost * 100, 8)
+                    # 更新总利润
+                    self.total_profit = round(self.total_profit + total_profit, 8) if self.total_profit else total_profit
+                    print(f"利润计算详情:")
+                    print(f"- 买入成本: {buy_cost}")
+                    print(f"- 实际利润: {total_profit}")
+                    print(f"- 利润率: {profit_pct}%")
+                    print(f"- 累计利润: {self.total_profit}")
+                    
+                    # 添加正向利润奖励的打印
+                    if total_profit > 0:
+                        profit_base_reward = self.reward_config.get('profit_base_reward', 0.05)
+                        print(f"- 正向利润奖励: +{profit_base_reward:.4f} (将在奖励计算时添加)")
+                    
+                    # 保存卖出交易的关键信息，用于奖励计算
+                    self.last_sell_position = self.position  # 记录卖出前的持仓量
+                    self.last_sell_price = current_price  # 记录卖出价格
+                    self.last_sell_avg_entry = self.avg_entry_price  # 记录卖出前的平均入场价
+                    
+                    # 计算交易收益率（考虑手续费）用于奖励计算
+                    sell_price_after_fee = current_price * (1 - self.transaction_fee)  # 考虑卖出手续费
+                    entry_price_with_fee = self.avg_entry_price * (1 + self.transaction_fee)  # 考虑买入手续费
+                    trade_return = (sell_price_after_fee - entry_price_with_fee) / entry_price_with_fee
+                    
+                    # 保存交易收益率和实际利润，供奖励计算使用
+                    self.last_trade_return = trade_return
+                    self.last_actual_profit = total_profit
+                
+                # 更新余额和持仓
+                old_balance = self.balance
+                self.balance = round(self.balance + sell_value, 8)
+                self.position = 0
+                self.position_value = 0
+                self.total_cost = 0
+                self.avg_entry_price = 0
+                
+                print(f"账户更新详情:")
+                print(f"- 原余额: {old_balance}")
+                print(f"- 新余额: {self.balance}")
+                print(f"- 持仓已清空")
+                
+                # 更新交易记录
+                transaction_executed = True
+                transaction_type = 'sell'
+                transaction_amount = old_position
+                
+                # 重置连续买入计数
+                self.consecutive_buy_count = 0
+                
+                print(f"\n交易执行成功 - 卖出 {old_position} 单位，价格: {current_price:.2f}，收入: {sell_value:.2f}（手续费: {sell_fee:.2f}）")
+                self.last_action = 0
+                self.last_trade_step = self.current_step
+                self.inaction_steps = 0
+                self.trade_count += 1
+            else:
+                print(f"卖出失败 - 当前无持仓，无法卖出")
+                action_result = 'no_position'
+        
         # 买入操作
-        if action == 2:
+        elif action == 2:
             if self.balance > 0:  # 有余额才能买入
                 # 计算可买入的数量（考虑手续费）
                 affordable_amount = self.balance / (current_price * (1 + self.transaction_fee))
@@ -574,57 +661,6 @@ class TradingEnv(gym.Env):
                 print(f"动作: 买入失败 - 资金不足! 当前余额: {self.balance:.2f}")
                 action_result = 'insufficient_funds'
         
-        # 卖出操作
-        elif action == 0:
-            if self.position > 0:  # 有持仓才能卖出
-                old_position = self.position
-                
-                # 计算卖出价值（扣除手续费），使用8位小数，避免精度损失
-                sell_amount = round(self.position * current_price, 8)  # 先计算卖出金额
-                sell_fee = round(sell_amount * self.transaction_fee, 8)  # 计算手续费
-                if sell_fee == 0 and self.transaction_fee > 0:  # 如果手续费被四舍五入为0，但费率不为0
-                    sell_fee = round(sell_amount * self.transaction_fee, 10)  # 使用更高精度
-                sell_value = round(sell_amount - sell_fee, 8)  # 实际卖出价值为卖出金额减去手续费
-                
-                # 更新手续费总额
-                self.fees_paid = round(self.fees_paid + sell_fee, 8)
-                
-                # 计算利润（使用持仓均价）
-                if self.avg_entry_price > 0:
-                    # 计算买入成本（基于持仓均价，包含手续费）
-                    buy_cost = round(self.position * self.avg_entry_price, 8)
-                    # 计算实际利润
-                    total_profit = round(sell_value - buy_cost, 8)
-                    profit_pct = round(total_profit / buy_cost * 100, 8)
-                    # 更新总利润
-                    self.total_profit = round(self.total_profit + total_profit, 8) if self.total_profit else total_profit
-                    print(f"利润: {total_profit:.8f} ({profit_pct:.8f}%), 累计利润: {self.total_profit:.8f}")
-                
-                # 更新余额和持仓
-                old_balance = self.balance
-                self.balance = round(self.balance + sell_value, 8)
-                self.position = 0
-                self.position_value = 0
-                self.total_cost = 0
-                self.avg_entry_price = 0
-                
-                # 更新交易记录
-                transaction_executed = True
-                transaction_type = 'sell'
-                transaction_amount = old_position
-                
-                # 重置连续买入计数
-                self.consecutive_buy_count = 0
-                
-                print(f"动作: 卖出 - 售出 {old_position} 单位，价格: {current_price:.2f}，收入: {sell_value:.2f}（手续费: {sell_fee:.2f}）")
-                self.last_action = 0
-                self.last_trade_step = self.current_step
-                self.inaction_steps = 0
-                self.trade_count += 1
-            else:
-                # 无持仓时尝试卖出
-                print(f"动作: 卖出失败 - 当前无持仓，无法卖出")
-                action_result = 'no_position'
         else:  # 持有
             self.inaction_steps += 1
             print(f"动作: 持有 - 当前持仓: {self.position:.4f}，价值: {self.position_value:.2f}，余额: {self.balance:.2f}")
@@ -739,80 +775,110 @@ class TradingEnv(gym.Env):
     
     def _calculate_reward(self, previous_portfolio_value, current_portfolio_value, action):
         """计算奖励函数，基于单次交易金额的收益率"""
-        # 设置奖励上限和下限
-        max_reward_limit = 0.5
-        min_reward_limit = -0.5
+        # 从配置中获取奖励放大因子
+        reward_amplifier = self.reward_config.get('reward_amplifier', 20.0)
+        
+        # 从配置中获取成功交易基础奖励
+        profit_base_reward = self.reward_config.get('profit_base_reward', 0.05)
         
         # 获取当前价格
         current_price = self.df.iloc[self.current_step]['close']
-        reward = 0.0
         
-        # 根据动作类型计算奖励
-        if action == 0:  # 卖出
-            if self.position > 0 and self.last_buy_price > 0:
-                # 计算本次交易的收益率（使用持仓均价，考虑手续费）
-                sell_price_after_fee = current_price * (1 - self.transaction_fee)  # 考虑卖出手续费
-                entry_price_with_fee = self.avg_entry_price * (1 + self.transaction_fee)  # 考虑买入手续费
-                trade_return = (sell_price_after_fee - entry_price_with_fee) / entry_price_with_fee
-                # 计算实际投入金额（使用持仓均价）
-                investment_amount = self.position * self.avg_entry_price
-                # 基于投入金额的实际收益
-                actual_profit = round(self.position * (sell_price_after_fee - entry_price_with_fee), 8)
-                # 计算基础奖励（基于收益率）
-                reward = trade_return  # 使用考虑了手续费的收益率作为基础奖励
+        # 初始化总奖励值
+        total_reward = 0.0
+        
+        # 检查是否为卖出交易
+        if action == 0 and hasattr(self, 'last_actual_profit'):
+            # 收益率奖励
+            if hasattr(self, 'last_trade_return'):
+                trade_return = self.last_trade_return
+                # 基于收益率的奖励
+                return_reward = trade_return * reward_amplifier
                 
-                # 打印交易详情
-                print(f"\n=== 卖出交易详情 ===")
-                print(f"买入价: {self.last_buy_price:.2f}, 卖出价: {current_price:.2f}")
-                print(f"投入金额: {investment_amount:.2f}")
-                print(f"收益率: {trade_return*100:.2f}%")
-                print(f"实际收益: {actual_profit:.2f}")
-                print(f"基础奖励: {reward:.4f}")
+                # 确保小的正收益率产生最小正奖励
+                if trade_return > 0 and return_reward < 0.001:
+                    return_reward = 0.001
                 
-                # 根据趋势方向给予额外奖励
+                # 保留3位小数精度
+                return_reward = round(return_reward, 3)
+                
+                total_reward += return_reward
+                print(f"\n=== 卖出交易奖励计算 ===")
+                print(f"收益率: {trade_return*100:.4f}%")
+                if return_reward >= 0:
+                    print(f"收益率奖励值: +{return_reward:.3f} (收益率 × 放大因子 {reward_amplifier})")
+                else:
+                    print(f"收益率惩罚值: {return_reward:.3f} (收益率 × 放大因子 {reward_amplifier})")
+                
+                # 基础正向利润奖励
+                if self.last_actual_profit > 0:
+                    profit_base_reward = round(profit_base_reward, 3)  # 保留3位小数精度
+                    total_reward += profit_base_reward
+                    print(f"基础成功奖励值: +{profit_base_reward:.3f} (盈利交易)")
+                
+                # 趋势方向奖励
                 if self.trend_direction * trade_return > 0:
-                    trend_reward = 0.1
-                    reward += trend_reward
-                    print(f"趋势跟随奖励: +{trend_reward:.4f}")
+                    trend_reward = self.reward_config.get('trend_follow_reward', 0.1)
+                    trend_reward = round(trend_reward, 3)  # 保留3位小数精度
+                    total_reward += trend_reward
+                    print(f"趋势跟随奖励值: +{trend_reward:.3f}")
+                
+                # 打印总奖励
+                if total_reward >= 0:
+                    print(f"总奖励值: +{total_reward:.3f}\n")
+                else:
+                    print(f"总惩罚值: {total_reward:.3f}\n")
         
-        elif action == 2:  # 买入
-            # 记录买入信息
-            self.last_buy_price = current_price
-            trade_amount = min(self.fixed_trade_amount, self.balance)
-            self.last_buy_cost = trade_amount
-            
-            # 买入时基于当前趋势给予小额奖励
+        # 买入奖励
+        elif action == 2:
+            # 买入基础奖励
             base_reward = 0.01
-            reward = base_reward
-            print(f"\n=== 买入交易详情 ===")
-            print(f"买入价格: {current_price:.2f}")
-            print(f"买入金额: {trade_amount:.2f}")
-            print(f"基础奖励: +{base_reward:.4f}")
+            base_reward = round(base_reward, 3)  # 保留3位小数精度
+            total_reward += base_reward
             
-            # 趋势跟随奖励
-            if self.trend_direction == 1:  # 上升趋势
-                trend_reward = 0.02
-                reward += trend_reward
-                print(f"上升趋势买入奖励: +{trend_reward:.4f}")
+            # 输出买入奖励信息
+            print(f"\n=== 买入交易奖励计算 ===")
+            print(f"买入基础奖励值: +{base_reward:.3f}")
+            
+            # 根据趋势方向给予奖励
+            if self.trend_direction == 1:
+                trend_reward = self.reward_config.get('trend_follow_reward', 0.3) / 10
+                trend_reward = round(trend_reward, 3)  # 保留3位小数精度
+                total_reward += trend_reward
+                print(f"上升趋势买入奖励值: +{trend_reward:.3f}")
             
             # 连续买入惩罚
             if self.consecutive_buy_count > 1:
-                consecutive_penalty = -0.05 * (self.consecutive_buy_count - 1)
-                reward += consecutive_penalty
-                print(f"连续买入惩罚: {consecutive_penalty:.4f} (连续{self.consecutive_buy_count}次)")
+                consecutive_penalty = self.reward_config.get('consecutive_buy_base_penalty', -0.05) * (self.consecutive_buy_count - 1)
+                consecutive_penalty = round(consecutive_penalty, 3)  # 保留3位小数精度
+                total_reward += consecutive_penalty
+                print(f"连续买入惩罚值: {consecutive_penalty:.3f} (连续{self.consecutive_buy_count}次)")
+            
+            # 打印小计
+            if total_reward >= 0:
+                print(f"总奖励值: +{total_reward:.3f}\n")
+            else:
+                print(f"总惩罚值: {total_reward:.3f}\n")
         
-        else:  # 持有
+        # 持有奖励
+        else:  # action == 1
             # 如果持有仓位，根据未实现收益率给予奖励
             if self.position > 0 and self.last_buy_price > 0:
                 unrealized_return = (current_price - self.last_buy_price) / self.last_buy_price
                 position_ratio = self.position_value / self.initial_balance
-                reward = unrealized_return * position_ratio * 0.1  # 缩小未实现收益的奖励
                 
-                if reward > 0:
-                    print(f"\n=== 持有收益 ===")
-                    print(f"当前持仓比例: {position_ratio*100:.2f}%")
-                    print(f"未实现收益率: {unrealized_return*100:.2f}%")
-                    print(f"持有奖励: +{reward:.4f}")
+                # 放大未实现收益的奖励
+                total_reward = unrealized_return * position_ratio * 0.1 * reward_amplifier
+                total_reward = round(total_reward, 3)  # 保留3位小数精度
+                
+                # 打印持有奖励信息
+                print(f"\n=== 持有交易奖励计算 ===")
+                print(f"当前持仓比例: {position_ratio*100:.2f}%")
+                print(f"未实现收益率: {unrealized_return*100:.4f}%")
+                if total_reward >= 0:
+                    print(f"持有奖励值: +{total_reward:.3f}\n")
+                else:
+                    print(f"持有惩罚值: {total_reward:.3f}\n")
         
         # 其他奖励和惩罚
         # 1. 资金利用率奖励
@@ -820,28 +886,89 @@ class TradingEnv(gym.Env):
             utilization_ratio = self.position_value / self.initial_balance
             if 0.3 <= utilization_ratio <= 0.7:  # 合理的资金利用率范围
                 utilization_reward = 0.01
-                reward += utilization_reward
-                print(f"资金利用率奖励: +{utilization_reward:.4f} (利用率: {utilization_ratio*100:.1f}%)")
+                utilization_reward = round(utilization_reward, 3)  # 保留3位小数精度
+                total_reward += utilization_reward
+                print(f"资金利用率奖励值: +{utilization_reward:.3f} (利用率: {utilization_ratio*100:.1f}%)")
         
         # 2. 资金不足惩罚
         if action == 2 and self.balance < self.fixed_trade_amount:
             insufficient_penalty = -0.2
-            reward += insufficient_penalty
-            print(f"资金不足惩罚: {insufficient_penalty:.4f}")
+            insufficient_penalty = round(insufficient_penalty, 3)  # 保留3位小数精度
+            total_reward += insufficient_penalty
+            print(f"资金不足惩罚值: {insufficient_penalty:.3f}")
         
         # 3. 长时间不活动惩罚
         if self.inaction_steps > 20:
-            inaction_penalty = -0.01 * min(self.inaction_steps / 10, 1.0)
-            reward += inaction_penalty
-            print(f"不活动惩罚: {inaction_penalty:.4f} ({self.inaction_steps}步无交易)")
+            inaction_penalty = self.reward_config.get('inaction_time_penalty', -0.01) * min(self.inaction_steps / 10, 1.0)
+            inaction_penalty = round(inaction_penalty, 3)  # 保留3位小数精度
+            total_reward += inaction_penalty
+            print(f"不活动惩罚值: {inaction_penalty:.3f} ({self.inaction_steps}步无交易)")
         
-        # 确保奖励在限定范围内
-        reward = min(max(reward, min_reward_limit), max_reward_limit)
+        # 最终奖励保留3位小数精度
+        total_reward = round(total_reward, 3)
         
-        # 打印最终奖励
-        print(f"最终奖励: {reward:.4f}\n")
+        # 打印最终奖励组成详情
+        print(f"\n=== 奖励组成详情 ===")
         
-        return reward
+        # 检查是否为卖出交易
+        is_sell_action = action == 0 and hasattr(self, 'last_actual_profit')
+        
+        # 卖出交易详情
+        if is_sell_action:
+            if hasattr(self, 'last_trade_return'):
+                # 收益率奖励
+                return_reward = self.last_trade_return * reward_amplifier
+                if self.last_trade_return > 0 and return_reward < 0.001:
+                    return_reward = 0.001
+                
+                return_reward = round(return_reward, 3)  # 保留3位小数精度
+                
+                if return_reward >= 0:
+                    print(f"- 收益率奖励值: +{return_reward:.3f}")
+                else:
+                    print(f"- 收益率惩罚值: {return_reward:.3f}")
+            
+            # 盈利交易奖励
+            if self.last_actual_profit > 0:
+                profit_base_reward = round(profit_base_reward, 3)  # 保留3位小数精度
+                print(f"- 正向利润基础奖励值: +{profit_base_reward:.3f}")
+            
+            # 趋势方向奖励
+            if hasattr(self, 'trend_direction') and self.trend_direction != 0 and hasattr(self, 'last_trade_return') and self.trend_direction * self.last_trade_return > 0:
+                trend_reward = self.reward_config.get('trend_follow_reward', 0.1)
+                trend_reward = round(trend_reward, 3)  # 保留3位小数精度
+                print(f"- 趋势方向奖励值: +{trend_reward:.3f}")
+        
+        # 输出最终计算得到的奖励值
+        if total_reward >= 0:
+            print(f"最终奖励值: +{total_reward:.3f}\n")
+        else:
+            print(f"最终惩罚值: {total_reward:.3f}\n")
+            # 当有惩罚值时，输出当前累计奖励值
+            # 获取当前环境类型和步数
+            env_type = getattr(self, 'env_type', 'training')
+            step = getattr(self, 'current_step', 0)
+            episode_step = getattr(self, 'episode_step_count', 0)
+            
+            # 计算当前回合的累计奖励
+            cumulative_reward = getattr(self, 'cumulative_reward', 0) + total_reward
+            cumulative_reward = round(cumulative_reward, 3)  # 保留3位小数精度
+            
+            # 输出累计奖励值 - 用步数替代时间
+            print(f"【步数: {episode_step}】当前累计奖励值: {cumulative_reward:.3f} (环境: {env_type})\n")
+        
+        # 强制保证有利润的交易有正向奖励
+        if is_sell_action and self.last_actual_profit > 0 and total_reward <= 0:
+            total_reward = 0.001  # 最小保底奖励
+            print(f"强制修正：有利润交易应有正向奖励，设置为最小奖励值 +0.001")
+        
+        # 更新累计奖励值
+        if not hasattr(self, 'cumulative_reward'):
+            self.cumulative_reward = 0
+        self.cumulative_reward += total_reward
+        self.cumulative_reward = round(self.cumulative_reward, 3)  # 保留3位小数精度
+        
+        return total_reward
     
     def _add_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """

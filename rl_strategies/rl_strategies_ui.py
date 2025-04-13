@@ -46,68 +46,62 @@ class RLStrategiesUI(QWidget):
         super().__init__(parent)
         
         # 设置窗口标题和大小
-        self.setWindowTitle("强化学习策略")
-        self.resize(1200, 800)
+        self.setWindowTitle("强化学习策略训练器")
+        self.resize(1280, 800)
 
-        # 当前数据和模型
+        # 数据相关变量
         self.kline_data = None
         self.trainer = None
         self.training_thread = None
-
-        # 状态变量
         self.is_training = False
-        self.training_results = {}
-        self.eval_results = []
-        self.best_model = None
-        self.best_model_reward = float('-inf')
-        self.best_model_episode = 0
-
-        # 存储交易记录
-        self.training_trades = []
-        self.evaluation_trades = []
-
-        # 数据存储管理
-        self.last_update_time = 0
-        self.max_history_size = 1000  # 限制历史数据大小
-        self.update_interval = 5  # 更新间隔(秒)
-
-        # 初始化历史数据
+        self.stop_requested = False
+        self.current_episode = 0
+        self.new_episode_started = False
+        self.episode_start_time = time.time()
         self.rewards_history = []
         self.returns_history = []
         self.learning_rates_history = []
         self.learning_rate_steps = []
         self.portfolio_values = []
-        self.rewards_steps = []
+        self.best_model = None
+        self.accumulated_rewards = []
+        self.last_plots_update_time = 0
+        self.min_update_interval = 0.5  # 更新图表的最小时间间隔（秒）
+        self.max_history_size = 5000  # 历史数据的最大长度
+        self.enable_data_compression = True  # 是否启用数据压缩
+        self.compress_threshold = 1000  # 压缩阈值
+        self.training_trades = []
+        self.evaluation_trades = []
         self.returns_steps = []
-
-        # 更新计时器
-        self.update_timer = QTimer(self)
-        self.update_timer.timeout.connect(self.update_ui)
-        self.update_timer.start(5000)  # 每5秒更新一次
-
-        # 清理计时器
-        self.cleanup_timer = QTimer(self)
-        self.cleanup_timer.timeout.connect(self.cleanup_data)
-        self.cleanup_timer.start(60000)  # 每分钟清理一次
-
-        # 添加内存管理相关的属性
-        self.max_history_size = 1000  # 最大历史数据点数
-        self.max_display_points = 200  # 最大显示点数
-        self.min_update_interval = 0.1  # 最小更新间隔（秒）
-        self._last_lr_update_time = 0
-        self._last_lr_data_hash = None
-
-        # 添加窗口化显示的配置
-        self.window_size = 500  # 学习率曲线只显示最近500个点
-        self.enable_data_compression = True  # 启用数据压缩
-        self.compress_threshold = 1000  # 数据压缩阈值
-
-        # 使用弱引用存储图形对象
-        import weakref
-        self._figure_refs = weakref.WeakSet()
-
+        self.rewards_steps = []
+        
+        # 用于跟踪训练步数的计数器
+        self.ui_step_counter = 0
+        
+        # 用于跟踪探索率的变量
+        self.ui_epsilon_value = 1.0  # 初始探索率为1.0
+        
+        # 探索率更新定时器
+        self.epsilon_timer = QTimer(self)
+        self.epsilon_timer.setInterval(2000)  # 每2秒更新一次
+        self.epsilon_timer.timeout.connect(self.update_epsilon_from_agent)
+        
         # 初始化UI
+        self.matplotlib_available = False  # 默认不可用
         self.init_ui()
+        
+        # 尝试初始化图表
+        self.init_plots()
+        
+        # 创建定时更新UI的定时器
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(500)  # 500毫秒间隔
+        self.update_timer.timeout.connect(self.update_ui)
+        self.update_timer.start()
+        
+        # 设置日志最大行数
+        if hasattr(self, 'log_text'):
+            self.log_text.document().setMaximumBlockCount(500)  # 限制最大显示500行
 
     def _data_changed(self, new_data):
         """检查数据是否发生实质性变化"""
@@ -150,30 +144,54 @@ class RLStrategiesUI(QWidget):
 
     def _reset_history_data(self):
         """重置历史数据"""
-                # 不再完全清空历史数据，而是保留之前的数据
-        # 标记新回合开始
+        # 完全清空历史数据，而不是保留之前的数据
         self.new_episode_started = True
         self.episode_start_time = time.time()
 
-        # 仅清空当前回合的临时数据
+        # 清空所有历史数据
+        self.rewards_history = []
+        self.returns_history = []
+        self.learning_rates_history = []
+        self.learning_rate_steps = []
+        self.portfolio_values = []
+        self.returns_steps = []
+        self.rewards_steps = []
         self.current_episode_returns = None
-
-        # 如果rewards_history等为空列表，仅做初始化
-        if not hasattr(self, 'rewards_history') or not self.rewards_history:
-            self.rewards_history = []
-        if not hasattr(self, 'returns_history') or not self.returns_history:
-            self.returns_history = []
-        if not hasattr(self, 'learning_rates_history') or not self.learning_rates_history:
-            self.learning_rates_history = []
-        if not hasattr(self, 'learning_rate_steps') or not self.learning_rate_steps:
-            self.learning_rate_steps = []
-        if not hasattr(self, 'portfolio_values') or not self.portfolio_values:
-            self.portfolio_values = []
-        if not hasattr(self, 'returns_steps') or not self.returns_steps:
-            self.returns_steps = []
 
         # 将更新时间戳重置，确保下一次更新会立即执行
         self.last_plots_update_time = 0
+
+        # 重置图表显示
+        if hasattr(self, 'rewards_ax') and self.matplotlib_available:
+            self.rewards_ax.clear()
+            self.rewards_ax.set_title('训练奖励曲线')
+            self.rewards_ax.set_xlabel('训练步数')
+            self.rewards_ax.set_ylabel('累积奖励')
+            self.rewards_ax.grid(True)
+            self.rewards_figure.tight_layout()
+            self.rewards_canvas.draw()
+
+        # 如果有返回历史图表，也重置它
+        if hasattr(self, 'returns_plot'):
+            try:
+                self.returns_plot.clear()
+            except Exception as e:
+                print(f"ERROR: 重置收益率曲线图时出错: {str(e)}")
+                
+        # 重置学习率曲线图
+        if hasattr(self, 'learning_rate_plot'):
+            try:
+                self.learning_rate_plot.clear()
+                print("已重置学习率曲线图")
+            except Exception as e:
+                print(f"ERROR: 重置学习率曲线图时出错: {str(e)}")
+
+        # 注意：不要重置探索率文本，以便用户可以查看历史探索率记录
+        # if hasattr(self, 'epsilon_text'):
+        #     self.epsilon_text.clear()
+        #     print("已重置探索率显示文本")
+
+        print("DEBUG: 历史数据和图表已完全重置，保留探索率历史记录")
 
     def update_ui(self):
         """更新UI显示"""
@@ -206,10 +224,24 @@ class RLStrategiesUI(QWidget):
                         if not hasattr(self, 'returns_history'):
                             self.returns_history = []
                         self.returns_history.append(latest_metrics['return'])
+                    # 添加更详细的学习率数据收集调试信息
                     if 'learning_rate' in latest_metrics:
                         if not hasattr(self, 'learning_rates_history'):
                             self.learning_rates_history = []
-                        self.learning_rates_history.append(latest_metrics['learning_rate'])
+                            print("DEBUG: 初始化学习率历史数组")
+                        
+                        current_lr = latest_metrics['learning_rate']
+                        self.learning_rates_history.append(current_lr)
+                        
+                        # 如果没有步数数据，创建它
+                        if not hasattr(self, 'learning_rate_steps'):
+                            self.learning_rate_steps = []
+                        
+                        # 添加步数数据
+                        next_step = self.learning_rate_steps[-1] + 1 if self.learning_rate_steps else 1
+                        self.learning_rate_steps.append(next_step)
+                        
+                        print(f"DEBUG: 添加学习率数据点: {current_lr:.6f}, 步数: {next_step}, 总数据点: {len(self.learning_rates_history)}")
                     if 'portfolio_value' in latest_metrics:
                         if not hasattr(self, 'portfolio_values'):
                             self.portfolio_values = []
@@ -238,12 +270,17 @@ class RLStrategiesUI(QWidget):
             except Exception as e:
                 print(f"ERROR: 更新奖励曲线时出错: {str(e)}")
 
-        # 更新学习率曲线
+        # 更新学习率曲线，增加更多调试信息
         if hasattr(self, 'learning_rates_history') and self.learning_rates_history:
             try:
+                print(f"DEBUG: 尝试更新学习率曲线，数据点数: {len(self.learning_rates_history)}")
                 self.update_learning_rate_plot(self.learning_rates_history)
             except Exception as e:
                 print(f"ERROR: 更新学习率曲线时出错: {str(e)}")
+                import traceback
+                print(traceback.format_exc())
+        else:
+            print("DEBUG: 没有学习率数据，跳过学习率曲线更新")
 
         # 更新收益曲线
         if hasattr(self, 'returns_history') and self.returns_history:
@@ -691,6 +728,62 @@ class RLStrategiesUI(QWidget):
         max_reward_layout.addStretch()
         compound_reward_layout.addLayout(max_reward_layout)
 
+        # 成功交易基础奖励
+        profit_base_reward_layout = QHBoxLayout()
+        profit_base_reward_layout.addWidget(QLabel("成功交易基础奖励:"))
+        self.profit_base_reward_spin = QDoubleSpinBox()
+        self.profit_base_reward_spin.setRange(0.0, 0.5)
+        self.profit_base_reward_spin.setSingleStep(0.01)
+        self.profit_base_reward_spin.setDecimals(2)
+        self.profit_base_reward_spin.setValue(0.05)
+        profit_base_reward_layout.addWidget(self.profit_base_reward_spin)
+
+        # 添加成功交易基础奖励帮助按钮
+        profit_base_reward_help_btn = QPushButton("?")
+        profit_base_reward_help_btn.setFixedSize(20, 20)
+        profit_base_reward_help_btn.clicked.connect(lambda: QMessageBox.information(self, "成功交易基础奖励说明",
+            "为任何盈利交易提供固定奖励：\n\n" \
+            "作用：\n" \
+            "1. 确保即使是小额盈利也有明确正向反馈\n" \
+            "2. 增强对成功交易方向的学习\n" \
+            "3. 避免微小收益被忽略\n\n" \
+            "具体实现：\n" \
+            "- 任何净收益为正的交易都会获得此固定奖励\n" \
+            "- 与收益率无关，只要盈利就有\n" \
+            "- 建议范围：0.02-0.1\n" \
+            "- 过高可能导致模型忽略收益率大小"))
+        profit_base_reward_layout.addWidget(profit_base_reward_help_btn)
+        profit_base_reward_layout.addStretch()
+        compound_reward_layout.addLayout(profit_base_reward_layout)
+
+        # 奖励放大因子
+        reward_amplifier_layout = QHBoxLayout()
+        reward_amplifier_layout.addWidget(QLabel("奖励放大因子:"))
+        self.reward_amplifier_spin = QDoubleSpinBox()
+        self.reward_amplifier_spin.setRange(1.0, 50.0)
+        self.reward_amplifier_spin.setSingleStep(1.0)
+        self.reward_amplifier_spin.setDecimals(1)
+        self.reward_amplifier_spin.setValue(20.0)
+        reward_amplifier_layout.addWidget(self.reward_amplifier_spin)
+
+        # 添加奖励放大因子帮助按钮
+        reward_amplifier_help_btn = QPushButton("?")
+        reward_amplifier_help_btn.setFixedSize(20, 20)
+        reward_amplifier_help_btn.clicked.connect(lambda: QMessageBox.information(self, "奖励放大因子说明",
+            "放大收益率产生的奖励信号：\n\n" \
+            "作用：\n" \
+            "1. 增强小收益率产生的奖励信号\n" \
+            "2. 使模型能够区分微小收益率差异\n" \
+            "3. 避免收益率计算结果过小被忽略\n\n" \
+            "具体实现：\n" \
+            "- 收益率直接乘以此因子值\n" \
+            "- 例如：0.1%收益率 × 20 = 2%奖励\n" \
+            "- 建议范围：10-30\n" \
+            "- 与成功交易基础奖励配合使用效果更佳"))
+        reward_amplifier_layout.addWidget(reward_amplifier_help_btn)
+        reward_amplifier_layout.addStretch()
+        compound_reward_layout.addLayout(reward_amplifier_layout)
+
         # 趋势跟随奖励
         trend_follow_layout = QHBoxLayout()
         trend_follow_layout.addWidget(QLabel("趋势跟随奖励:"))
@@ -1097,7 +1190,7 @@ class RLStrategiesUI(QWidget):
         metrics_layout = QVBoxLayout(self.metrics_tab)
 
         # 性能指标面板
-        self.metrics_group = QGroupBox("性能指标")
+        self.metrics_group = QGroupBox("奖惩日志")
         metrics_chart_layout = QVBoxLayout()
 
         self.metrics_text = QTextEdit()
@@ -1166,16 +1259,38 @@ class RLStrategiesUI(QWidget):
         self.learning_rate_plot.setMinimumSize(400, 300)  # 设置最小尺寸确保图表可见
         learning_rate_layout.addWidget(self.learning_rate_plot)
 
+        # 创建水平布局来放置学习率和探索率信息
+        info_layout = QHBoxLayout()
+        
         # 添加学习率信息标签
         self.learning_rate_info = QLabel("当前学习率: 0.000500")
-        learning_rate_layout.addWidget(self.learning_rate_info)
+        info_layout.addWidget(self.learning_rate_info)
+        
+        # 添加探索率信息标签
+        self.epsilon_info = QLabel("当前探索率: 1.000000")
+        info_layout.addWidget(self.epsilon_info)
+        
+        # 将水平布局添加到主布局
+        learning_rate_layout.addLayout(info_layout)
+
+        # 添加探索率标签页
+        self.epsilon_tab = QWidget()
+        epsilon_layout = QVBoxLayout(self.epsilon_tab)
+
+        # 添加探索率文本框
+        self.epsilon_text = QTextEdit()
+        self.epsilon_text.setReadOnly(True)
+        self.epsilon_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)  # 禁用自动换行
+        self.epsilon_text.setFont(QApplication.font("Monospace"))  # 使用等宽字体
+        epsilon_layout.addWidget(self.epsilon_text)
 
         # 将所有标签页添加到结果标签页控件
         self.results_tabs.addTab(self.chart_control_tab, "图表控制")
         self.results_tabs.addTab(self.rewards_tab, "奖励曲线")
         self.results_tabs.addTab(self.returns_tab, "收益曲线")
         self.results_tabs.addTab(self.learning_rate_tab, "学习率曲线")
-        self.results_tabs.addTab(self.metrics_tab, "性能指标")
+        self.results_tabs.addTab(self.epsilon_tab, "探索率")
+        self.results_tabs.addTab(self.metrics_tab, "奖惩日志")
         self.results_tabs.addTab(self.best_model_tab, "最佳模型")
         self.results_tabs.addTab(self.training_trades_tab, "训练交易记录")
         self.results_tabs.addTab(self.evaluation_trades_tab, "评估交易记录")
@@ -1183,6 +1298,18 @@ class RLStrategiesUI(QWidget):
 
         return self.results_tabs
 
+    def on_epsilon_change(self, epsilon_message):
+        """
+        处理探索率变化信息 - 已弃用，现在由update_epsilon_info直接处理
+        保留此方法以兼容可能的旧代码调用
+        
+        参数:
+            epsilon_message: 探索率变化信息字符串
+        """
+        # 此方法已被update_epsilon_info替代，不再需要实现
+        # 为了兼容性，保留此方法但不执行任何操作
+        pass
+    
     def unified_data_callback(self, data, source_type='training'):
         """
         统一的数据回调处理函数，处理来自训练和评估的数据
@@ -1263,17 +1390,63 @@ class RLStrategiesUI(QWidget):
             self.progress_bar.setValue(progress)
             self.episode_label.setText(f"回合: {episode}/{max_episodes}")
 
-        # 更新当前回合进度
+        # 更新当前回合进度和步数计数器
         current_step = None
         if 'step' in data and 'max_steps' in data:
             step = data['step']
             current_step = step  # 记录当前步数
             max_steps = data['max_steps']
+            
+            # 更新UI侧的步数计数器
+            self.ui_step_counter = step
+            print(f"[训练进度] UI步数计数器更新为: {self.ui_step_counter}")
+            
             if max_steps > 0:
                 episode_progress = int(step / max_steps * 100)
                 self.episode_progress_bar.setValue(episode_progress)
                 self.step_label.setText(f"当前步骤: {step}/{max_steps}")
-
+        
+        # 如果有环境信息，也尝试更新步数
+        if 'env_info' in data and isinstance(data['env_info'], dict):
+            env_info = data['env_info']
+            if 'current_step' in env_info:
+                env_step = env_info['current_step']
+                # 只有当环境步数大于当前UI步数时才更新
+                if env_step > self.ui_step_counter:
+                    self.ui_step_counter = env_step
+                    print(f"[环境信息] UI步数计数器更新为: {self.ui_step_counter}")
+                    
+        # 如果有代理信息，尝试更新步数和探索率
+        if 'agent_info' in data and isinstance(data['agent_info'], dict):
+            agent_info = data['agent_info']
+            
+            # 更新步数
+            if 'learn_step_counter' in agent_info:
+                agent_step = agent_info['learn_step_counter']
+                # 只有当代理步数大于当前UI步数时才更新
+                if agent_step > self.ui_step_counter:
+                    self.ui_step_counter = agent_step
+                    print(f"[代理信息] UI步数计数器更新为: {self.ui_step_counter}")
+            
+            # 更新探索率
+            if 'epsilon' in agent_info:
+                agent_epsilon = agent_info['epsilon']
+                # 只有当代理探索率大于0时才更新
+                if agent_epsilon > 0.0:
+                    self.ui_epsilon_value = agent_epsilon
+                    print(f"[代理信息] UI探索率更新为: {self.ui_epsilon_value}")
+                else:
+                    print(f"[代理信息] 忽略代理探索率为0的更新: {agent_epsilon}")
+        
+        # 如果数据中直接包含epsilon信息
+        if 'epsilon' in data:
+            data_epsilon = data['epsilon']
+            if data_epsilon > 0.0:
+                self.ui_epsilon_value = data_epsilon
+                print(f"[训练进度] UI探索率直接更新为: {self.ui_epsilon_value}")
+            else:
+                print(f"[训练进度] 忽略数据中探索率为0的更新: {data_epsilon}")
+                
         # 处理学习率数据
         learning_rate_updated = False
         if 'learning_rate' in data:
@@ -1400,6 +1573,11 @@ class RLStrategiesUI(QWidget):
                 # 记录当前episode以便跟踪
                 self.current_episode_rewards = data.get('episode', 0)
                 rewards_updated = True
+
+                # 输出最终累计奖励值
+                if len(new_rewards) > 0:
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"[{current_time}] 累计奖励值: {new_rewards[-1]:.4f} (最终值)")
             else:
                 # 检查数据更新情况
                 needs_update = False
@@ -1422,9 +1600,20 @@ class RLStrategiesUI(QWidget):
                     self.rewards_history = new_rewards.copy()
                     self.rewards_steps = rewards_steps.copy()
                     rewards_updated = True
+
+                    # 输出当前累计奖励值
+                    if len(new_rewards) > 0:
+                        current_time = datetime.now().strftime("%H:%M:%S")
+                        current_step = data.get('step', len(new_rewards) * 10)
+                        print(f"[{current_time}] 累计奖励值: {new_rewards[-1]:.4f} (步数: {current_step})")
         elif self.accumulated_rewards and len(self.accumulated_rewards) > 1:
             # 如果没有收到完整rewards，使用累积的备用数据
             rewards_updated = True
+
+            # 输出累积的备用奖励数据
+            if len(self.accumulated_rewards) > 0:
+                current_time = datetime.now().strftime("%H:%M:%S")
+                print(f"[{current_time}] 累计奖励值(备用): {self.accumulated_rewards[-1]:.4f}")
 
         # ===== 处理returns数据 =====
         returns_updated = False
@@ -2252,7 +2441,9 @@ class RLStrategiesUI(QWidget):
                 'frequent_trade_penalty': float(self.frequent_trade_spin.value()),
                 'position_holding_penalty': float(self.position_holding_spin.value()),
                 'consecutive_buy_base_penalty': float(self.consecutive_buy_spin.value()),
-                'trade_interval_threshold': int(self.trade_interval_spin.value())
+                'trade_interval_threshold': int(self.trade_interval_spin.value()),
+                'profit_base_reward': float(self.profit_base_reward_spin.value()),  # 新增：成功交易基础奖励
+                'reward_amplifier': float(self.reward_amplifier_spin.value())       # 新增：奖励放大因子
             }
 
         # 确保max_episode_steps有一个合理的值
@@ -2356,194 +2547,220 @@ class RLStrategiesUI(QWidget):
 
     def start_training(self):
         """开始训练"""
-        if self.is_training:
-            QMessageBox.warning(self, "警告", "训练已经在进行中！")
-            return
-
-        # 检查是否有数据
-        if self.kline_data is None or len(self.kline_data) == 0:
-            QMessageBox.warning(self, "错误", "请先加载数据！")
-            return
-
-        # 输出训练前的配置信息
-        print("\n" + "="*50)
-        print("训练开始，配置信息如下:")
-
-        # 获取环境配置
-        try:
-            env_config = self.get_env_config()
-            print(f"[训练] 环境配置: {env_config}")
-        except Exception as e:
-            QMessageBox.critical(self, "配置错误", f"环境配置错误: {str(e)}")
-            return
-
-        # 获取代理配置
-        try:
-            agent_config = self.get_agent_config()
-            print("\n=== 训练开始时的代理配置 ===")
-            print(f"[训练] 基础学习率: {agent_config['learning_rate']:.6f}")
-            print(f"[训练] 最大学习率(max_learning_rate): {agent_config['max_learning_rate']:.6f}")
-            if 'lr_adaptation' in agent_config:
-                print(f"[训练] 学习率自适应最大学习率: {agent_config['lr_adaptation']['max_lr']:.6f}")
-            print("="*50 + "\n")
-        except Exception as e:
-            QMessageBox.critical(self, "配置错误", f"代理配置错误: {str(e)}")
-            return
-
-        # 获取训练参数
-        self.log_message("准备训练参数...")
-
-        # 获取模型参数
-        model_type = self.model_type_combo.currentText()
-        use_double_dqn = self.double_dqn_check.isChecked()
-        hidden_layers_text = self.hidden_layers_text.currentText()
-        hidden_layers = [int(x) for x in hidden_layers_text.split(',')]
-        learning_rate = self.lr_spin.value()
-        gamma = self.gamma_spin.value()
-        batch_size = self.batch_size_spin.value()
-        eval_freq = self.eval_freq_spin.value()
-
-        # 获取训练参数
-        max_episodes = self.max_episodes_spin.value()
-        train_ratio = self.train_ratio_spin.value() / 100.0  # 转换为小数
-
-        # 获取环境配置
-        config_data = self.get_env_config()  # 获取包含多个配置的字典
-        env_config = config_data['env_config']  # 环境基本配置
-        reward_weights = config_data.get('reward_weights', {})  # 奖励权重
-        reward_config = config_data.get('reward_config', {})  # 奖励配置
-
-        # 如果使用复合奖励，将奖励权重添加到环境配置中
-        if env_config['reward_type'] == 'compound':
-            env_config['reward_weights'] = reward_weights
-
-        # 分割训练和验证数据
-        train_size = int(len(self.kline_data) * train_ratio)
-        train_data = self.kline_data.iloc[:train_size].copy()
-        val_data = self.kline_data.iloc[train_size:].copy()
-
-        self.log_message(f"训练数据: {len(train_data)}行, 验证数据: {len(val_data)}行")
-
-        # 创建代理配置
-        agent_config = {
-            'learning_rate': learning_rate,
-            'gamma': gamma,
-            'batch_size': batch_size,
-            'hidden_layers': hidden_layers,
-            'use_double_dqn': use_double_dqn,
-            'eval_frequency': eval_freq,
-            'max_episodes': max_episodes
-        }
-
-        # 创建训练配置
-        train_config = {
-            'episodes': max_episodes,
-            'batch_size': batch_size,
-            'learning_rate': learning_rate,
-            'discount_factor': gamma,
-            'agent_type': model_type.lower(),
-            'verbose': True,
-            'max_learning_rate': self.model_select_max_lr_spin.value(),  # 直接从UI控件获取
-            'lr_adaptation': {  # 添加学习率自适应配置
-                'enabled': hasattr(self, 'dynamic_lr_check') and self.dynamic_lr_check.isChecked(),
-                'base_lr': learning_rate,
-                'min_lr': self.min_lr_spin.value() if hasattr(self, 'min_lr_spin') else learning_rate / 10.0,
-                'max_lr': self.model_select_max_lr_spin.value(),  # 使用相同的最大学习率
-                'increase_threshold': self.lr_increase_threshold_spin.value() if hasattr(self, 'lr_increase_threshold_spin') else -0.1,
-                'decrease_threshold': self.lr_decrease_threshold_spin.value() if hasattr(self, 'lr_decrease_threshold_spin') else 0.05,
-                'increase_factor': self.lr_increase_factor_spin.value() if hasattr(self, 'lr_increase_factor_spin') else 1.5,
-                'decrease_factor': self.lr_decrease_factor_spin.value() if hasattr(self, 'lr_decrease_factor_spin') else 0.8,
-                'adaptation_window': 5,
-                'cooldown_period': 3
-            }
-        }
-
-        # 打印配置信息以便调试
-        print("\n=== 训练配置信息 ===")
-        print(f"基础学习率: {learning_rate}")
-        print(f"最大学习率: {train_config['max_learning_rate']}")
-        print(f"学习率自适应配置: {train_config['lr_adaptation']}")
-        print("="*50)
-
-        # 根据模型类型设置正确的agent_type参数
-        agent_type = model_type.lower()
-
-        try:
-            # 直接创建训练线程，而不是先创建训练器
-            from rl_strategies.rl_training_thread import RLTrainingThread
-            self.training_thread = RLTrainingThread(
-                trainer=None,  # 不使用预先创建的训练器
-                max_episodes=max_episodes,
-                env_config=env_config,
-                train_config=train_config,  # 包含完整的配置
-                train_df=train_data,
-                eval_df=val_data,
-                load_model_path=None,
-                save_model_path=None
-            )
-
-            # 连接信号
-            self.training_thread.progress_signal.connect(self.on_training_update)
-            self.training_thread.eval_signal.connect(self.on_eval_result)
-            self.training_thread.complete_signal.connect(self.on_training_completed)
-            self.training_thread.error_signal.connect(self.log_message)  # 连接错误信号
-            self.training_thread.log_signal.connect(self.log_message)
-
-            # 开始训练
-            self.training_thread.start()
-            self.is_training = True
-
-            # 更新UI状态
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(True)
-            self.eval_best_btn.setEnabled(False)
-
-            # 重置进度条
-            self.progress_bar.setValue(0)
-            self.episode_progress_bar.setValue(0)
-
-            self.status_label.setText("训练中...")
-            self.log_message(f"开始{model_type}模型训练，最大回合数: {max_episodes}")
-
-        except Exception as e:
-            import traceback
-            error_message = traceback.format_exc()
-            self.log_message(f"启动训练时出错: {str(e)}")
-            print(f"ERROR: 启动训练时出错: {str(e)}\n{error_message}")
-            QMessageBox.critical(self, "错误", f"无法启动训练: {str(e)}")
-
-    def stop_training(self):
-        """停止训练过程"""
         # 检查是否已经在训练状态
-        if not self.is_training:
+        if self.is_training:
+            self.log_message("训练已经在进行中...")
             return
+        
+        try:
+            # 在开始新的训练前重置历史数据和图表
+            self._reset_history_data()
+            
+            # 检查配置
+            if hasattr(self, 'model_type_combo'):
+                model_type = self.model_type_combo.currentText()
+            else:
+                model_type = "DQN"
+            print(f"选择的模型类型: {model_type}")
+            
+            # 设置环境和奖励类型
+            if hasattr(self, 'env_combo'):
+                env_name = self.env_combo.currentText()
+            else:
+                env_name = "TradingEnv"
+            print(f"选择的环境: {env_name}")
+            
+            # 重置UI侧步数计数器
+            self.ui_step_counter = 0
+            print("[训练开始] 重置UI步数计数器为0")
+            
+            # 重置UI侧探索率变量
+            self.ui_epsilon_value = 1.0
+            print("[训练开始] 重置UI探索率为1.0")
+            
+            # 输出训练前的配置信息
+            print("\n" + "="*50)
+            print("训练开始，配置信息如下:")
 
-        # 检查是否已经发送了停止请求，避免重复发送
-        if hasattr(self, 'stop_requested') and self.stop_requested:
-            self.log_message("已经发送停止请求，请耐心等待当前轮次结束...")
-            return
+            # 获取环境配置
+            try:
+                env_config = self.get_env_config()
+                print(f"[训练] 环境配置: {env_config}")
+            except Exception as e:
+                QMessageBox.critical(self, "配置错误", f"环境配置错误: {str(e)}")
+                return
 
-        # 设置停止状态标志
-        self.stop_requested = True
+            # 获取代理配置
+            try:
+                agent_config = self.get_agent_config()
+                print("\n=== 训练开始时的代理配置 ===")
+                print(f"[训练] 基础学习率: {agent_config['learning_rate']:.6f}")
+                print(f"[训练] 最大学习率(max_learning_rate): {agent_config['max_learning_rate']:.6f}")
+                if 'lr_adaptation' in agent_config:
+                    print(f"[训练] 学习率自适应最大学习率: {agent_config['lr_adaptation']['max_lr']:.6f}")
+                print("="*50 + "\n")
+            except Exception as e:
+                QMessageBox.critical(self, "配置错误", f"代理配置错误: {str(e)}")
+                return
 
-        # 更新UI状态 - 禁用停止按钮防止重复点击
-        self.stop_btn.setEnabled(False)
-        self.status_label.setText("正在停止训练（等待当前轮次结束）...")
-        self.log_message("正在停止训练，等待当前训练轮次结束...")
+            # 获取训练参数
+            self.log_message("准备训练参数...")
 
-        # 请求停止训练 - 先尝试训练线程的stop方法
-        if hasattr(self.training_thread, 'stop'):
-            self.training_thread.stop()
-            print("DEBUG: 通过训练线程发送停止信号")
+            # 获取模型参数
+            use_double_dqn = self.double_dqn_check.isChecked()
+            hidden_layers_text = self.hidden_layers_text.currentText()
+            hidden_layers = [int(x) for x in hidden_layers_text.split(',')]
+            learning_rate = self.lr_spin.value()
+            gamma = self.gamma_spin.value()
+            batch_size = self.batch_size_spin.value()
+            eval_freq = self.eval_freq_spin.value()
 
-        # 如果有直接访问的trainer对象，也设置它的停止标志
-        if hasattr(self, 'trainer') and self.trainer is not None:
-            self.trainer.stop_requested = True
-            print("DEBUG: 直接设置trainer的stop_requested=True")
+            # 获取训练参数
+            max_episodes = self.max_episodes_spin.value()
+            train_ratio = self.train_ratio_spin.value() / 100.0  # 转换为小数
+
+            # 获取环境配置
+            config_data = self.get_env_config()  # 获取包含多个配置的字典
+            env_config = config_data['env_config']  # 环境基本配置
+            reward_weights = config_data.get('reward_weights', {})  # 奖励权重
+            reward_config = config_data.get('reward_config', {})  # 奖励配置
+
+            # 如果使用复合奖励，将奖励权重添加到环境配置中
+            if env_config['reward_type'] == 'compound':
+                env_config['reward_weights'] = reward_weights
+
+            # 分割训练和验证数据
+            train_size = int(len(self.kline_data) * train_ratio)
+            train_data = self.kline_data.iloc[:train_size].copy()
+            val_data = self.kline_data.iloc[train_size:].copy()
+
+            self.log_message(f"训练数据: {len(train_data)}行, 验证数据: {len(val_data)}行")
+
+            # 创建代理配置
+            agent_config = {
+                'learning_rate': learning_rate,
+                'gamma': gamma,
+                'batch_size': batch_size,
+                'hidden_layers': hidden_layers,
+                'use_double_dqn': use_double_dqn,
+                'eval_frequency': eval_freq,
+                'max_episodes': max_episodes
+            }
+
+            # 创建训练配置
+            train_config = {
+                'episodes': max_episodes,
+                'batch_size': batch_size,
+                'learning_rate': learning_rate,
+                'discount_factor': gamma,
+                'agent_type': model_type.lower(),
+                'verbose': True,
+                'max_learning_rate': self.model_select_max_lr_spin.value(),  # 直接从UI控件获取
+                'lr_adaptation': {  # 添加学习率自适应配置
+                    'enabled': hasattr(self, 'dynamic_lr_check') and self.dynamic_lr_check.isChecked(),
+                    'base_lr': learning_rate,
+                    'min_lr': self.min_lr_spin.value() if hasattr(self, 'min_lr_spin') else learning_rate / 10.0,
+                    'max_lr': self.model_select_max_lr_spin.value(),  # 使用相同的最大学习率
+                    'increase_threshold': self.lr_increase_threshold_spin.value() if hasattr(self, 'lr_increase_threshold_spin') else -0.1,
+                    'decrease_threshold': self.lr_decrease_threshold_spin.value() if hasattr(self, 'lr_decrease_threshold_spin') else 0.05,
+                    'increase_factor': self.lr_increase_factor_spin.value() if hasattr(self, 'lr_increase_factor_spin') else 1.5,
+                    'decrease_factor': self.lr_decrease_factor_spin.value() if hasattr(self, 'lr_decrease_factor_spin') else 0.8,
+                    'adaptation_window': 5,
+                    'cooldown_period': 3
+                }
+            }
+
+            # 打印配置信息以便调试
+            print("\n=== 训练配置信息 ===")
+            print(f"基础学习率: {learning_rate}")
+            print(f"最大学习率: {train_config['max_learning_rate']}")
+            print(f"学习率自适应配置: {train_config['lr_adaptation']}")
+            print("="*50)
+
+            # 根据模型类型设置正确的agent_type参数
+            agent_type = model_type.lower()
+
+            try:
+                # 直接创建训练线程，而不是先创建训练器
+                from rl_strategies.rl_training_thread import RLTrainingThread
+                self.training_thread = RLTrainingThread(
+                    trainer=None,  # 不使用预先创建的训练器
+                    max_episodes=max_episodes,
+                    env_config=env_config,
+                    train_config=train_config,  # 包含完整的配置
+                    train_df=train_data,
+                    eval_df=val_data,
+                    load_model_path=None,
+                    save_model_path=None
+                )
+
+                # 连接信号
+                self.training_thread.progress_signal.connect(self.on_training_update)
+                self.training_thread.eval_signal.connect(self.on_eval_result)
+                self.training_thread.complete_signal.connect(self.on_training_completed)
+                self.training_thread.error_signal.connect(self.log_message)  # 连接错误信号
+                self.training_thread.log_signal.connect(self.log_message)
+                
+                # 连接探索率信号
+                if hasattr(self.training_thread, 'epsilon_signal'):
+                    self.training_thread.epsilon_signal.connect(self.update_epsilon_info)
+                    print("已连接探索率信号到UI")
+                
+                # 设置探索率回调函数
+                # 注意：此时trainer和agent可能还未创建，需要在训练线程中设置回调
+                # 添加自定义回调函数到训练线程，让它在创建agent后设置回调
+                def setup_epsilon_callback(agent):
+                    if hasattr(agent, 'register_epsilon_callback'):
+                        agent.register_epsilon_callback(self.update_epsilon_info)
+                        print("已注册探索率变化回调函数")
+                    elif hasattr(agent, 'epsilon_callback'):
+                        agent.epsilon_callback = self.update_epsilon_info
+                        print("已设置探索率回调函数")
+                    else:
+                        print("警告: 代理对象不支持探索率回调")
+                
+                # 将回调设置函数传递给训练线程
+                self.training_thread.setup_agent_callback = setup_epsilon_callback
+                
+                # 开始训练
+                self.training_thread.start()
+                self.is_training = True
+                
+                # 启动探索率更新定时器
+                self.epsilon_timer.start()
+                print("[定时器] 已启动探索率更新定时器")
+
+                # 更新UI状态
+                self.start_btn.setEnabled(False)
+                self.stop_btn.setEnabled(True)
+                self.eval_best_btn.setEnabled(False)
+
+                # 重置进度条
+                self.progress_bar.setValue(0)
+                self.episode_progress_bar.setValue(0)
+
+                self.status_label.setText("训练中...")
+                self.log_message(f"开始{model_type}模型训练，最大回合数: {max_episodes}")
+
+            except Exception as e:
+                import traceback
+                error_message = traceback.format_exc()
+                self.log_message(f"启动训练时出错: {str(e)}")
+                print(f"ERROR: 启动训练时出错: {str(e)}\n{error_message}")
+                QMessageBox.critical(self, "错误", f"无法启动训练: {str(e)}")
+        
+        except Exception as e:
+            print(f"ERROR: 启动训练时出错: {str(e)}")
+            QMessageBox.critical(self, "错误", f"无法启动训练: {str(e)}")
 
     def on_training_completed(self):
         """训练完成时的处理"""
         self.is_training = False
+
+        # 停止探索率更新定时器
+        if hasattr(self, 'epsilon_timer') and self.epsilon_timer.isActive():
+            self.epsilon_timer.stop()
+            print("[定时器] 已停止探索率更新定时器")
 
         # 重置停止请求标志
         if hasattr(self, 'stop_requested'):
@@ -2566,6 +2783,9 @@ class RLStrategiesUI(QWidget):
         else:
             self.status_label.setText("训练完成")
             self.log_message("训练完成")
+
+        # 注意：不再在训练结束时重置历史数据和图表，让图表保持显示直到下次训练开始
+        # self._reset_history_data()
 
         # 如果有最佳模型，更新显示
         if has_best_model:
@@ -2672,34 +2892,34 @@ class RLStrategiesUI(QWidget):
             return
 
         try:
-            # 检查更新频率
-            current_time = time.time()
-            if current_time - self._last_lr_update_time < self.min_update_interval:
+            # 检查是否有数据
+            if not learning_rates or len(learning_rates) == 0:
+                print("DEBUG: 学习率数据为空，跳过更新")
                 return
-
-            # 更新学习率曲线
+                
+            print(f"DEBUG: 正在更新学习率曲线，数据点数={len(learning_rates)}")
+                
+            # 获取步数数据
             steps = None
             if hasattr(self, 'learning_rate_steps') and len(self.learning_rate_steps) >= len(learning_rates):
                 offset = len(self.learning_rate_steps) - len(learning_rates)
                 steps = self.learning_rate_steps[offset:offset+len(learning_rates)]
+                print(f"DEBUG: 使用存储的步数，范围: {min(steps) if steps else 0} - {max(steps) if steps else 0}")
 
+            # 确保learning_rate_plot对象存在
+            if not hasattr(self, 'learning_rate_plot') or self.learning_rate_plot is None:
+                from rl_strategies.ui.learning_rate_plot import LearningRatePlot
+                self.learning_rate_plot = LearningRatePlot()
+                print("DEBUG: 创建了新的学习率曲线图对象")
+                
+            # 更新曲线数据
             self.learning_rate_plot.update_plot(learning_rates, steps)
-
-            # 更新时间戳
-            self._last_lr_update_time = current_time
+            print(f"DEBUG: 学习率曲线更新完成，数据点数={len(learning_rates)}")
 
         except Exception as e:
             print(f"ERROR: 更新学习率曲线时出错: {str(e)}")
             import traceback
             print(traceback.format_exc())
-
-        except Exception as e:
-            print(f"错误: 更新学习率曲线时出错: {e}")
-            import traceback
-            print(f"错误详情: {traceback.format_exc()}")
-
-        # 清理数据
-        self.cleanup_data()
 
     def update_returns_plot(self, returns):
         """
@@ -3314,3 +3534,169 @@ class RLStrategiesUI(QWidget):
             
         print(f"数据压缩: {len(data)}点 -> {len(result_data)}点")
         return result_data, result_steps
+
+    def update_epsilon_from_agent(self):
+        """从代理对象获取当前探索率并更新UI"""
+        try:
+            # 检查是否正在训练
+            if not self.is_training or not hasattr(self, 'training_thread') or not self.training_thread.isRunning():
+                return
+                
+            # 获取当前探索率和步数
+            step_counter = 0
+            current_epsilon = 0.0
+            
+            # 首先使用UI侧的步数计数器
+            if hasattr(self, 'ui_step_counter'):
+                step_counter = self.ui_step_counter
+                print(f"使用UI侧步数计数器: {step_counter}")
+            
+            # 首先使用UI侧维护的探索率
+            if hasattr(self, 'ui_epsilon_value'):
+                current_epsilon = self.ui_epsilon_value
+                print(f"使用UI侧探索率值: {current_epsilon}")
+            
+            # 尝试从训练器对象获取步数（如果UI计数器为0）
+            if step_counter == 0 and hasattr(self.training_thread, 'trainer') and self.training_thread.trainer is not None:
+                trainer = self.training_thread.trainer
+                
+                # 尝试不同的步数属性名
+                if hasattr(trainer, 'current_step'):
+                    step_counter = trainer.current_step
+                    print(f"从trainer.current_step获取步数: {step_counter}")
+                elif hasattr(trainer, 'step_count'):
+                    step_counter = trainer.step_count
+                    print(f"从trainer.step_count获取步数: {step_counter}")
+                elif hasattr(trainer, 'total_steps'):
+                    step_counter = trainer.total_steps
+                    print(f"从trainer.total_steps获取步数: {step_counter}")
+            
+            # 如果无法从训练器获取步数，再尝试从代理获取
+            if (step_counter == 0 or current_epsilon == 0.0) and hasattr(self.training_thread, 'agent') and self.training_thread.agent is not None:
+                agent = self.training_thread.agent
+                print(f"尝试从代理获取信息...")
+                
+                # 检查代理是否有epsilon属性，如果UI侧探索率为0，则尝试从代理获取
+                if hasattr(agent, 'epsilon') and (current_epsilon == 0.0 or abs(current_epsilon) < 1e-6):
+                    agent_epsilon = agent.epsilon
+                    print(f"从agent.epsilon获取探索率: {agent_epsilon}")
+                    
+                    # 只有当代理探索率不为0时才更新UI探索率
+                    if agent_epsilon > 0.0:
+                        current_epsilon = agent_epsilon
+                        # 更新UI变量
+                        self.ui_epsilon_value = current_epsilon
+                        print(f"更新UI探索率为代理值: {self.ui_epsilon_value}")
+                
+                # 尝试获取步数
+                if hasattr(agent, 'learn_step_counter'):
+                    agent_step = agent.learn_step_counter
+                    print(f"从agent.learn_step_counter获取步数: {agent_step}")
+                    # 只有当代理步数大于当前步数时才更新
+                    if agent_step > step_counter:
+                        step_counter = agent_step
+                        self.ui_step_counter = step_counter
+                        print(f"更新UI步数为代理值: {self.ui_step_counter}")
+            
+            # 获取当前时间
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 创建探索率信息消息
+            epsilon_message = f"【{current_time}】【步数: {step_counter}】探索率：{current_epsilon:.4f}，定时获取"
+            print(f"[定时器] {epsilon_message}")
+            
+            # 更新UI
+            if hasattr(self, 'epsilon_text') and self.epsilon_text is not None:
+                # 添加消息到文本框
+                self.epsilon_text.append(epsilon_message)
+                # 滚动到底部
+                self.epsilon_text.verticalScrollBar().setValue(self.epsilon_text.verticalScrollBar().maximum())
+                
+                # 更新探索率标签
+                if hasattr(self, 'epsilon_info'):
+                    self.epsilon_info.setText(f"当前探索率: {current_epsilon:.6f}")
+                    
+            # 强制刷新UI
+            QApplication.processEvents()
+            
+        except Exception as e:
+            print(f"[定时器] 更新探索率信息时出错: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+
+    def stop_training(self):
+        """停止训练过程"""
+        # 检查是否已经在训练状态
+        if not self.is_training:
+            return
+
+        # 检查是否已经发送了停止请求，避免重复发送
+        if hasattr(self, 'stop_requested') and self.stop_requested:
+            self.log_message("已经发送停止请求，请耐心等待当前轮次结束...")
+            return
+
+        # 设置停止状态标志
+        self.stop_requested = True
+
+        # 更新UI状态 - 禁用停止按钮防止重复点击
+        self.stop_btn.setEnabled(False)
+        self.status_label.setText("正在停止训练（等待当前轮次结束）...")
+        self.log_message("正在停止训练，等待当前训练轮次结束...")
+
+        # 请求停止训练 - 先尝试训练线程的stop方法
+        if hasattr(self.training_thread, 'stop'):
+            self.training_thread.stop()
+            print("DEBUG: 通过训练线程发送停止信号")
+
+        # 如果有直接访问的trainer对象，也设置它的停止标志
+        if hasattr(self, 'trainer') and self.trainer is not None:
+            self.trainer.stop_requested = True
+            print("DEBUG: 直接设置trainer的stop_requested=True")
+
+        # 停止探索率更新定时器
+        if hasattr(self, 'epsilon_timer') and self.epsilon_timer.isActive():
+            self.epsilon_timer.stop()
+            print("[定时器] 在停止训练时停止探索率更新定时器")
+
+        # 移除重置历史数据的定时调用
+        # QTimer.singleShot(1000, self._reset_history_data)  # 1秒后重置历史数据
+
+    def update_epsilon_info(self, message):
+        """更新探索率信息"""
+        # 打印更详细的调试信息
+        print(f"【探索率回调】收到消息: {message}")
+        
+        try:
+            # 确保文本区域存在并可见
+            if hasattr(self, 'epsilon_text') and self.epsilon_text is not None:
+                print(f"【探索率回调】文本区域检查通过，准备更新UI")
+                # 将探索率变化信息添加到文本框
+                self.epsilon_text.append(message)
+                print(f"【探索率回调】已添加消息到文本框")
+                # 滚动到底部
+                self.epsilon_text.verticalScrollBar().setValue(self.epsilon_text.verticalScrollBar().maximum())
+                
+                # 更新探索率信息标签
+                if "探索率：" in message:
+                    try:
+                        # 提取探索率值
+                        epsilon_value = float(message.split("探索率：")[1].split("，")[0])
+                        # 更新UI变量
+                        self.ui_epsilon_value = epsilon_value
+                        print(f"【探索率回调】已更新UI探索率值: {self.ui_epsilon_value:.6f}")
+                        
+                        # 更新标签
+                        self.epsilon_info.setText(f"当前探索率: {epsilon_value:.6f}")
+                        print(f"【探索率回调】已更新探索率信息标签: {epsilon_value:.6f}")
+                    except Exception as e:
+                        print(f"【探索率回调】解析探索率信息时出错: {str(e)}")
+            else:
+                print("【探索率回调】错误: epsilon_text不存在或为None")
+                
+            # 强制更新UI
+            QApplication.processEvents()
+            print(f"【探索率回调】UI已刷新")
+        except Exception as e:
+            print(f"【探索率回调】更新探索率信息时出错: {str(e)}")
+            import traceback
+            print(traceback.format_exc())

@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 from typing import Dict, List, Tuple, Any, Union, Optional
+from datetime import datetime
 
 from rl_strategies.config import DQN_CONFIG
 
@@ -144,7 +145,7 @@ class DQNAgent:
         self.activation = self.config.get('activation', 'relu')
         self.double_dqn = self.config.get('double_dqn', False)  # 是否使用Double DQN
         
-        # 性能跟踪变量，用于动态学习率调整
+        # 性能跟踪变量，用于动态学习率和探索率调整
         self.performance_history = {
             'returns': [],          # 每回合收益率
             'rewards': [],          # 每回合奖励
@@ -152,6 +153,8 @@ class DQNAgent:
             'positive_actions': 0,  # 产生正面结果的行动数
             'negative_actions': 0,  # 产生负面结果的行动数
             'adaptation_cooldown': 0,  # 学习率调整冷却期
+            'epsilon_cooldown': 0,  # 探索率调整冷却期
+            'epsilon_history': [],  # 探索率历史
         }
         
         # 学习率动态调整参数
@@ -218,15 +221,43 @@ class DQNAgent:
         # 损失函数
         self.loss_fn = nn.MSELoss()
     
-    def set_epsilon(self, epsilon: float) -> None:
+    def set_epsilon(self, epsilon: float, reason: str = "未指定") -> None:
         """
         设置探索率
         
         参数:
             epsilon: 新的探索率值
+            reason: 探索率变化的原因
         """
+        old_epsilon = self.epsilon
         self.epsilon = max(0.0, min(1.0, epsilon))  # 确保值在[0, 1]范围内
-        print(f"DQNAgent: 探索率设置为 {self.epsilon:.4f}")
+        if abs(old_epsilon - self.epsilon) > 1e-6:  # 只在探索率发生变化时打印
+            epsilon_message = f"【步数: {self.learn_step_counter}】探索率：{self.epsilon:.4f}，变更原因：{reason}"
+            print(f"[DQN探索率变化] {epsilon_message}")
+            
+            # 发送探索率变化信号，如果有回调函数的话
+            if hasattr(self, 'epsilon_callback') and callable(self.epsilon_callback):
+                try:
+                    print(f"[DQN探索率变化] 调用epsilon_callback回调...")
+                    self.epsilon_callback(epsilon_message)
+                    print(f"[DQN探索率变化] epsilon_callback回调调用成功")
+                except Exception as e:
+                    print(f"[DQN探索率变化] 调用探索率回调函数时出错: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+            else:
+                print("[DQN探索率变化] 警告: 探索率回调函数未设置或不可调用")
+    
+    def register_epsilon_callback(self, callback_function) -> None:
+        """
+        注册探索率变化回调函数
+        
+        参数:
+            callback_function: 回调函数，接收探索率变化信息字符串作为参数
+        """
+        self.epsilon_callback = callback_function
+        print(f"已注册探索率变化回调函数: {callback_function.__name__ if hasattr(callback_function, '__name__') else 'unnamed'}")
+
     
     def replay(self, batch_size: int = None) -> Optional[float]:
         """
@@ -415,16 +446,41 @@ class DQNAgent:
             self.target_net.load_state_dict(self.policy_net.state_dict())
         
         # 更新探索率
-        self.epsilon = max(
+        # 基础探索率衰减
+        base_epsilon = max(
             self.epsilon_end,
             self.epsilon * self.epsilon_decay
         )
+        
+        # 根据性能动态调整探索率
+        if len(self.performance_history['losses']) > 0:
+            recent_losses = self.performance_history['losses'][-10:]  # 获取最近10次的损失
+            avg_loss = sum(recent_losses) / len(recent_losses)
+            
+            # 如果平均损失较高，增加探索率
+            if avg_loss > 0.5:  # 可以根据实际情况调整阈值
+                base_epsilon = min(base_epsilon * 1.1, 0.9)  # 增加探索率，但不超过0.9
+            # 如果平均损失较低，可以稍微降低探索率
+            elif avg_loss < 0.1:  # 可以根据实际情况调整阈值
+                base_epsilon = max(base_epsilon * 0.95, self.epsilon_end)
+        
+        # 更新探索率
+        reason = "常规衰减"
+        if len(self.performance_history['losses']) > 0:
+            recent_losses = self.performance_history['losses'][-10:]
+            avg_loss = sum(recent_losses) / len(recent_losses)
+            if avg_loss > 0.5:
+                reason = "损失较高，增加探索"
+            elif avg_loss < 0.1:
+                reason = "损失较低，减少探索"
+        self.set_epsilon(base_epsilon, reason)
+        self.performance_history['epsilon_history'].append(self.epsilon)
         
         return loss.item()
     
     def update_performance(self, episode_return: float, episode_reward: float) -> None:
         """
-        更新性能指标并调整学习率
+        更新性能指标并调整学习率和探索率
         
         参数:
             episode_return: 回合收益率
@@ -437,6 +493,33 @@ class DQNAgent:
         # 打印当前学习率状态
         print(f"[DQN-学习率] 回合结束 - 当前学习率: {self.get_learning_rate():.6f}, 最小值: {self.lr_adaptation['min_lr']:.6f}, 最大值: {self.lr_adaptation['max_lr']:.6f}")
         print(f"[DQN-学习率] 学习率参数: 启用={self.lr_adaptation['enabled']}, 收益率={episode_return:.2f}%")
+        
+        # 根据回合表现调整探索率
+        if self.performance_history['epsilon_cooldown'] <= 0:
+            # 获取最近的表现数据
+            recent_returns = self.performance_history['returns'][-5:]
+            recent_rewards = self.performance_history['rewards'][-5:]
+            
+            if len(recent_returns) >= 5:
+                avg_return = sum(recent_returns) / len(recent_returns)
+                avg_reward = sum(recent_rewards) / len(recent_rewards)
+                
+                # 根据表现调整探索率
+                if avg_return < -5.0 or avg_reward < 0:  # 表现不佳
+                    # 增加探索率以寻找更好的策略
+                    new_epsilon = min(self.epsilon * 1.2, 0.9)
+                    self.set_epsilon(new_epsilon, "表现不佳，增加探索")
+                    self.performance_history['epsilon_cooldown'] = 3  # 设置冷却期
+                elif avg_return > 5.0 and avg_reward > 0:  # 表现良好
+                    # 减少探索率以更多地利用已学到的策略
+                    new_epsilon = max(self.epsilon * 0.9, self.epsilon_end)
+                    self.set_epsilon(new_epsilon, "表现良好，减少探索")
+                    self.performance_history['epsilon_cooldown'] = 3  # 设置冷却期
+        else:
+            self.performance_history['epsilon_cooldown'] -= 1
+            if self.performance_history['epsilon_cooldown'] > 0:
+                self.set_epsilon(self.epsilon, f"冷却中，剩余 {self.performance_history['epsilon_cooldown']} 回合")
+
         
         # 如果动态学习率功能被禁用，则直接返回
         if not self.lr_adaptation['enabled']:

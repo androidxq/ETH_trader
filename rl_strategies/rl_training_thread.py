@@ -24,6 +24,7 @@ class RLTrainingThread(QThread):
     complete_signal = pyqtSignal()      # 完成信号
     error_signal = pyqtSignal(str)      # 错误信号
     log_signal = pyqtSignal(str)        # 日志信号
+    epsilon_signal = pyqtSignal(str)    # 探索率信号
     
     def __init__(self, trainer: RLTrainer = None, max_episodes: int = 500, progress_callback=None, env_config=None, train_config=None, train_df=None, eval_df=None, load_model_path=None, save_model_path=None):
         """
@@ -185,7 +186,10 @@ class RLTrainingThread(QThread):
                     'learning_rate': learning_rate,
                     'update_target_every': update_target_every,
                     'max_learning_rate': self.train_config.get('max_learning_rate'),
-                    'lr_adaptation': self.train_config.get('lr_adaptation', {})
+                    'lr_adaptation': self.train_config.get('lr_adaptation', {}),
+                    'epsilon_start': 1.0,  # 确保设置初始探索率
+                    'epsilon_end': 0.01,   # 确保设置最终探索率
+                    'epsilon_decay': 0.995 # 确保设置探索率衰减因子
                 }
 
                 # 打印完整的代理配置
@@ -200,6 +204,22 @@ class RLTrainingThread(QThread):
                     action_dim=action_size,
                     config=agent_config
                 )
+                
+                # 设置探索率回调函数
+                if hasattr(self, 'setup_agent_callback') and callable(self.setup_agent_callback):
+                    self.setup_agent_callback(self.agent)
+                    print("DEBUG: 已通过回调设置探索率监控")
+                else:
+                    print("警告: 未找到setup_agent_callback函数，无法设置探索率监控")
+                    # 尝试直接设置epsilon_callback
+                    if hasattr(self.agent, 'register_epsilon_callback'):
+                        def epsilon_callback(message):
+                            print(f"探索率更新: {message}")
+                            # 发送探索率信息到UI专门的探索率信号
+                            self.epsilon_signal.emit(message)
+                        
+                        self.agent.register_epsilon_callback(epsilon_callback)
+                        print("已直接注册探索率回调函数")
                 
                 # 检查是否有上一次训练的模型权重需要加载
                 if self.load_model_path:
@@ -683,6 +703,14 @@ class RLTrainingThread(QThread):
                 env_config=env_config,
                 agent_config=complete_agent_config
             )
+            
+            # 设置训练器的环境已正确设置环境类型
+            self.trainer.train_env.env_type = 'training'
+            self.trainer.val_env.env_type = 'evaluation'
+            
+            # 初始化交易记录存储
+            self.trainer.train_env.train_transaction_history = []
+            self.trainer.val_env.eval_transaction_history = []
             
             # 设置训练器的progress_callback
             # 使用内部处理方法，避免命名冲突
